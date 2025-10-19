@@ -279,14 +279,15 @@ async function setupExecutor(taskId: string, task: string, browserContext: Brows
   }
   // Log the provider config being used for the navigator
   const navigatorProviderConfig = providers[navigatorModel.provider];
-  const navigatorLLM = createChatModel(navigatorProviderConfig, navigatorModel);
+  const tabId = browserContext.getCurrentTabId() ?? undefined;
+  const navigatorLLM = createChatModel(navigatorProviderConfig, navigatorModel, tabId);
 
   let plannerLLM: BaseChatModel | null = null;
   const plannerModel = agentModels[AgentNameEnum.Planner];
   if (plannerModel) {
     // Log the provider config being used for the planner
     const plannerProviderConfig = providers[plannerModel.provider];
-    plannerLLM = createChatModel(plannerProviderConfig, plannerModel);
+    plannerLLM = createChatModel(plannerProviderConfig, plannerModel, tabId);
   }
 
   // Apply firewall settings to browser context

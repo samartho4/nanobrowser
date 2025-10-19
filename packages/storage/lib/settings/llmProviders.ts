@@ -62,6 +62,7 @@ export function getProviderTypeByProviderId(providerId: string): ProviderTypeEnu
     case ProviderTypeEnum.Anthropic:
     case ProviderTypeEnum.DeepSeek:
     case ProviderTypeEnum.Gemini:
+    case ProviderTypeEnum.GeminiNano:
     case ProviderTypeEnum.Grok:
     case ProviderTypeEnum.Ollama:
     case ProviderTypeEnum.OpenRouter:
@@ -85,6 +86,8 @@ export function getDefaultDisplayNameFromProviderId(providerId: string): string 
       return 'DeepSeek';
     case ProviderTypeEnum.Gemini:
       return 'Gemini';
+    case ProviderTypeEnum.GeminiNano:
+      return 'Gemini Nano';
     case ProviderTypeEnum.Grok:
       return 'Grok';
     case ProviderTypeEnum.Ollama:
@@ -127,6 +130,16 @@ export function getDefaultProviderConfig(providerId: string): ProviderConfig {
               ? 'https://api.llama.com/v1'
               : undefined,
         modelNames: [...(llmProviderModelNames[providerId] || [])],
+        createdAt: Date.now(),
+      };
+
+    case ProviderTypeEnum.GeminiNano:
+      return {
+        apiKey: 'local', // Not needed but required by schema
+        name: 'Gemini Nano',
+        type: ProviderTypeEnum.GeminiNano,
+        baseUrl: 'local', // Not needed but required by schema
+        modelNames: ['gemini-nano'],
         createdAt: Date.now(),
       };
 

@@ -8,8 +8,7 @@ import { ChatCerebras } from '@langchain/cerebras';
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { ChatOllama } from '@langchain/ollama';
 import { ChatDeepSeek } from '@langchain/deepseek';
-import { AIMessage } from '@langchain/core/messages';
-import type { BaseMessage } from '@langchain/core/messages';
+import { GeminiNanoChatModel } from '../llm/langchain/GeminiNanoChatModel';
 
 const maxTokens = 1024 * 4;
 
@@ -228,7 +227,11 @@ function createAzureChatModel(providerConfig: ProviderConfig, modelConfig: Model
 }
 
 // create a chat model based on the agent name, the model name and provider
-export function createChatModel(providerConfig: ProviderConfig, modelConfig: ModelConfig): BaseChatModel {
+export function createChatModel(
+  providerConfig: ProviderConfig,
+  modelConfig: ModelConfig,
+  tabId?: number,
+): BaseChatModel {
   const temperature = (modelConfig.parameters?.temperature ?? 0.1) as number;
   const topP = (modelConfig.parameters?.topP ?? 0.1) as number;
 
@@ -282,6 +285,13 @@ export function createChatModel(providerConfig: ProviderConfig, modelConfig: Mod
         topP,
       };
       return new ChatGoogleGenerativeAI(args);
+    }
+    case ProviderTypeEnum.GeminiNano: {
+      // Gemini Nano - Chrome's built-in AI with direct API access
+      return new GeminiNanoChatModel({
+        temperature,
+        topK: topP, // Map topP to topK for Nano
+      });
     }
     case ProviderTypeEnum.Grok: {
       const args = {

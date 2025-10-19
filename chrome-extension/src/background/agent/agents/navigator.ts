@@ -75,7 +75,6 @@ export interface NavigatorResult {
 export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
   private actionRegistry: NavigatorActionRegistry;
   private jsonSchema: Record<string, unknown>;
-  private _stateHistory: BrowserStateHistory | null = null;
 
   constructor(
     actionRegistry: NavigatorActionRegistry,
@@ -90,10 +89,129 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
     this.jsonSchema = convertZodToJsonSchema(this.modelOutputSchema, 'NavigatorAgentOutput', true);
   }
 
+  /**
+   * Create simplified schema for Gemini Nano
+   * Defines ALL possible parameters upfront to prevent Gemini from being creative with field names
+   * Per Gemini docs: "lots of optional properties" causes issues, but we need to be explicit
+   */
+  private createSimplifiedSchema(): Record<string, unknown> {
+    // Get all action names from the registry
+    const actionNames = Object.keys(this.actionRegistry['actions']);
+
+    // Build action descriptions
+    const actions = Object.values(this.actionRegistry['actions']) as Action[];
+    const actionDescriptions: string[] = [];
+
+    for (const action of actions) {
+      actionDescriptions.push(`${action.name()}: ${action.schema.description}`);
+    }
+
+    // Define ALL possible parameters that ANY action might use
+    // This prevents Gemini Nano from inventing its own field names
+    return {
+      type: 'object',
+      properties: {
+        current_state: {
+          type: 'object',
+          properties: {
+            evaluation_previous_goal: { type: 'string' },
+            memory: { type: 'string' },
+            next_goal: { type: 'string' },
+          },
+          required: ['evaluation_previous_goal', 'memory', 'next_goal'],
+        },
+        action: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              action_type: {
+                type: 'string',
+                enum: actionNames,
+                description: `Action to perform. Available actions:\n${actionDescriptions.join('\n')}`,
+              },
+              parameters: {
+                type: 'object',
+                description: 'Parameters for the action. Only include fields relevant to the action_type.',
+                properties: {
+                  // Common fields
+                  intent: { type: 'string', description: 'purpose of this action' },
+
+                  // Navigation fields
+                  url: { type: 'string', description: 'URL to navigate to or open' },
+                  query: { type: 'string', description: 'search query for Google' },
+
+                  // Element interaction fields
+                  index: { type: 'integer', description: 'index of the element to interact with' },
+                  xpath: { type: 'string', description: 'xpath of the element (optional)' },
+                  text: { type: 'string', description: 'text to input or option text to select' },
+
+                  // Tab management fields
+                  tab_id: { type: 'integer', description: 'id of the tab' },
+
+                  // Scroll fields
+                  yPercent: { type: 'integer', description: 'percentage to scroll to (0-100)' },
+                  nth: { type: 'integer', description: 'which occurrence (1-indexed)' },
+
+                  // Cache fields
+                  content: { type: 'string', description: 'content to cache' },
+
+                  // Keyboard fields
+                  keys: { type: 'string', description: 'keys to send' },
+
+                  // Wait fields
+                  seconds: { type: 'integer', description: 'seconds to wait' },
+
+                  // Done fields
+                  success: { type: 'boolean', description: 'whether task succeeded' },
+                },
+              },
+            },
+            required: ['action_type', 'parameters'],
+          },
+        },
+      },
+      required: ['current_state', 'action'],
+    };
+  }
+
+  /**
+   * Convert simplified Gemini Nano response to expected format
+   * From: { action_type: "go_to_url", parameters: {...} }
+   * To: { go_to_url: {...} }
+   *
+   * NO MAPPING - parameters should already have exact field names from schema
+   */
+  private convertSimplifiedResponse(parsed: any): any {
+    if (!parsed.action || !Array.isArray(parsed.action)) {
+      return parsed;
+    }
+
+    // Convert each action from simplified format
+    parsed.action = parsed.action.map((act: any) => {
+      if (act.action_type && act.parameters !== undefined) {
+        // Direct conversion - parameters should already be correct
+        // Convert: { action_type: "go_to_url", parameters: {url: "..."} }
+        // To: { go_to_url: {url: "..."} }
+        return { [act.action_type]: act.parameters };
+      }
+      return act;
+    });
+
+    return parsed;
+  }
+
   async invoke(inputMessages: BaseMessage[]): Promise<this['ModelOutput']> {
     // Use structured output
     if (this.withStructuredOutput) {
-      const structuredLlm = this.chatLLM.withStructuredOutput(this.jsonSchema, {
+      // For Gemini Nano, use simplified schema
+      let schema = this.jsonSchema;
+      const isGeminiNano = (this.chatLLM as any).modelName === 'gemini-nano';
+      if (isGeminiNano) {
+        schema = this.createSimplifiedSchema();
+      }
+
+      const structuredLlm = this.chatLLM.withStructuredOutput(schema, {
         includeRaw: true,
         name: this.modelOutputToolName,
       });
@@ -106,6 +224,10 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
         });
 
         if (response.parsed) {
+          // For Gemini Nano, convert simplified format back to expected format
+          if (isGeminiNano) {
+            return this.convertSimplifiedResponse(response.parsed);
+          }
           return response.parsed;
         }
       } catch (error) {
@@ -362,7 +484,8 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
 
     await browserContext.removeHighlight();
 
-    for (const [i, action] of actions.entries()) {
+    for (let i = 0; i < actions.length; i++) {
+      const action = actions[i];
       const actionName = Object.keys(action)[0];
       const actionArgs = action[actionName];
       try {

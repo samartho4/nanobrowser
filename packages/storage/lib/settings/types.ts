@@ -12,6 +12,7 @@ export enum ProviderTypeEnum {
   Anthropic = 'anthropic',
   DeepSeek = 'deepseek',
   Gemini = 'gemini',
+  GeminiNano = 'gemini-nano',
   Grok = 'grok',
   Ollama = 'ollama',
   AzureOpenAI = 'azure_openai',
@@ -33,6 +34,7 @@ export const llmProviderModelNames = {
   ],
   [ProviderTypeEnum.DeepSeek]: ['deepseek-chat', 'deepseek-reasoner'],
   [ProviderTypeEnum.Gemini]: ['gemini-2.5-flash', 'gemini-2.5-pro'],
+  [ProviderTypeEnum.GeminiNano]: ['gemini-nano'],
   [ProviderTypeEnum.Grok]: ['grok-3', 'grok-3-fast', 'grok-3-mini', 'grok-3-mini-fast'],
   [ProviderTypeEnum.Ollama]: ['qwen3:14b', 'falcon3:10b', 'qwen2.5-coder:14b', 'mistral-small:24b'],
   [ProviderTypeEnum.AzureOpenAI]: ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4o'],
@@ -78,6 +80,16 @@ export const llmProviderParameters = {
     [AgentNameEnum.Navigator]: {
       temperature: 0.3,
       topP: 0.85,
+    },
+  },
+  [ProviderTypeEnum.GeminiNano]: {
+    [AgentNameEnum.Planner]: {
+      temperature: 0.7,
+      topP: 3, // topK for Nano (1-3)
+    },
+    [AgentNameEnum.Navigator]: {
+      temperature: 0.3,
+      topP: 2, // topK for Nano
     },
   },
   [ProviderTypeEnum.Grok]: {
