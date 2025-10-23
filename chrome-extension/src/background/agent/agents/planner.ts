@@ -19,9 +19,10 @@ import { filterExternalContent } from '../messages/utils';
 const logger = createLogger('PlannerAgent');
 
 // Define Zod schema for planner output
+// Note: challenges and next_steps can be either string or array (model sometimes returns arrays)
 export const plannerOutputSchema = z.object({
   observation: z.string(),
-  challenges: z.string(),
+  challenges: z.union([z.string(), z.array(z.string()).transform(arr => arr.join('; '))]),
   done: z.union([
     z.boolean(),
     z.string().transform(val => {
@@ -30,7 +31,7 @@ export const plannerOutputSchema = z.object({
       throw new Error('Invalid boolean string');
     }),
   ]),
-  next_steps: z.string(),
+  next_steps: z.union([z.string(), z.array(z.string()).transform(arr => arr.join('; '))]),
   final_answer: z.string(),
   reasoning: z.string(),
   web_task: z.union([

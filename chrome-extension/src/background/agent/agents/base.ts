@@ -1,13 +1,11 @@
 import type { z } from 'zod';
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { AgentContext, AgentOutput } from '../types';
 import type { BasePrompt } from '../prompts/base';
 import type { BaseMessage } from '@langchain/core/messages';
 import { createLogger } from '@src/background/log';
 import type { Action } from '../actions/builder';
-import { convertInputMessages, extractJsonFromModelOutput, removeThinkTags } from '../messages/utils';
+import { HybridAIClient } from '@src/background/llm/HybridAIClient';
 import { isAbortedError, ResponseParseError } from './errors';
-import { ProviderTypeEnum } from '@extension/storage';
 
 const logger = createLogger('agent');
 
@@ -16,14 +14,12 @@ export type CallOptions = Record<string, any>;
 
 // Update options to use Zod schema
 export interface BaseAgentOptions {
-  chatLLM: BaseChatModel;
+  aiClient: HybridAIClient;
   context: AgentContext;
   prompt: BasePrompt;
-  provider?: string;
 }
 export interface ExtraAgentOptions {
   id?: string;
-  toolCallingMethod?: string;
   callOptions?: CallOptions;
 }
 
@@ -34,164 +30,104 @@ export interface ExtraAgentOptions {
  */
 export abstract class BaseAgent<T extends z.ZodType, M = unknown> {
   protected id: string;
-  protected chatLLM: BaseChatModel;
+  protected aiClient: HybridAIClient;
   protected prompt: BasePrompt;
   protected context: AgentContext;
   protected actions: Record<string, Action> = {};
   protected modelOutputSchema: T;
-  protected toolCallingMethod: string | null;
-  protected chatModelLibrary: string;
-  protected modelName: string;
-  protected provider: string;
-  protected withStructuredOutput: boolean;
   protected callOptions?: CallOptions;
-  protected modelOutputToolName: string;
   declare ModelOutput: z.infer<T>;
 
   constructor(modelOutputSchema: T, options: BaseAgentOptions, extraOptions?: Partial<ExtraAgentOptions>) {
     // base options
     this.modelOutputSchema = modelOutputSchema;
-    this.chatLLM = options.chatLLM;
+    this.aiClient = options.aiClient;
     this.prompt = options.prompt;
     this.context = options.context;
-    this.provider = options.provider || '';
-    // TODO: fix this, the name is not correct in production environment
-    this.chatModelLibrary = this.chatLLM.constructor.name;
-    this.modelName = this.getModelName();
-    this.withStructuredOutput = this.setWithStructuredOutput();
     // extra options
     this.id = extraOptions?.id || 'agent';
-    this.toolCallingMethod = this.setToolCallingMethod(extraOptions?.toolCallingMethod);
     this.callOptions = extraOptions?.callOptions;
-    this.modelOutputToolName = `${this.id}_output`;
   }
 
-  // Set the model name
-  private getModelName(): string {
-    if ('modelName' in this.chatLLM) {
-      return this.chatLLM.modelName as string;
-    }
-    if ('model_name' in this.chatLLM) {
-      return this.chatLLM.model_name as string;
-    }
-    if ('model' in this.chatLLM) {
-      return this.chatLLM.model as string;
-    }
-    return 'Unknown';
-  }
-
-  // Set the tool calling method
-  private setToolCallingMethod(toolCallingMethod?: string): string | null {
-    if (toolCallingMethod === 'auto') {
-      switch (this.chatModelLibrary) {
-        case 'ChatGoogleGenerativeAI':
-          return null;
-        case 'ChatOpenAI':
-        case 'AzureChatOpenAI':
-        case 'ChatGroq':
-        case 'ChatXAI':
-          return 'function_calling';
-        default:
-          return null;
-      }
-    }
-    return toolCallingMethod || null;
-  }
-
-  // Check if model is a Llama model (only for Llama-specific handling)
-  private isLlamaModel(modelName: string): boolean {
-    return modelName.includes('Llama-4') || modelName.includes('Llama-3.3') || modelName.includes('llama-3.3');
-  }
-
-  // Set whether to use structured output based on the model name
-  private setWithStructuredOutput(): boolean {
-    if (this.modelName === 'deepseek-reasoner' || this.modelName === 'deepseek-r1') {
-      return false;
-    }
-
-    // Llama API models don't support json_schema response format
-    if (this.provider === ProviderTypeEnum.Llama || this.isLlamaModel(this.modelName)) {
-      logger.debug(`[${this.modelName}] Llama API doesn't support structured output, using manual JSON extraction`);
-      return false;
-    }
-
-    return true;
+  /**
+   * Convert LangChain messages to a simple prompt string
+   */
+  private convertMessagesToPrompt(messages: BaseMessage[]): string {
+    return messages
+      .map(msg => {
+        const type = msg._getType();
+        if (type === 'human') return `User: ${msg.content}`;
+        if (type === 'ai') return `Assistant: ${msg.content}`;
+        if (type === 'system') return `System: ${msg.content}`;
+        return String(msg.content);
+      })
+      .join('\n\n');
   }
 
   async invoke(inputMessages: BaseMessage[]): Promise<this['ModelOutput']> {
-    // Use structured output
-    if (this.withStructuredOutput) {
-      logger.debug(`[${this.modelName}] Preparing structured output call with schema:`, {
-        schemaName: this.modelOutputToolName,
-        messageCount: inputMessages.length,
-        modelProvider: this.provider,
-      });
-
-      const structuredLlm = this.chatLLM.withStructuredOutput(this.modelOutputSchema, {
-        includeRaw: true,
-        name: this.modelOutputToolName,
-      });
-
-      try {
-        logger.debug(`[${this.modelName}] Invoking LLM with structured output...`);
-        const response = await structuredLlm.invoke(inputMessages, {
-          signal: this.context.controller.signal,
-          ...this.callOptions,
-        });
-
-        logger.debug(`[${this.modelName}] LLM response received:`, {
-          hasParsed: !!response.parsed,
-          hasRaw: !!response.raw,
-          rawContent: response.raw?.content?.slice(0, 500) + (response.raw?.content?.length > 500 ? '...' : ''),
-        });
-
-        if (response.parsed) {
-          logger.debug(`[${this.modelName}] Successfully parsed structured output`);
-          return response.parsed;
-        }
-        logger.error('Failed to parse response', response);
-        throw new Error('Could not parse response with structured output');
-      } catch (error) {
-        if (isAbortedError(error)) {
-          throw error;
-        }
-        logger.error(`[${this.modelName}] LLM call failed with error:`, error);
-        const errorMessage = `Failed to invoke ${this.modelName} with structured output: \n${error instanceof Error ? error.message : String(error)}`;
-        throw new Error(errorMessage);
-      }
-    }
-
-    // Without structured output support, need to extract JSON from model output manually
-    logger.debug(`[${this.modelName}] Using manual JSON extraction fallback method`);
-    const convertedInputMessages = convertInputMessages(inputMessages, this.modelName);
-
     try {
-      const response = await this.chatLLM.invoke(convertedInputMessages, {
-        signal: this.context.controller.signal,
-        ...this.callOptions,
+      logger.debug('[BaseAgent] Preparing HybridAIClient invocation', {
+        messageCount: inputMessages.length,
+        hasSchema: !!this.modelOutputSchema,
       });
 
-      if (typeof response.content === 'string') {
-        response.content = removeThinkTags(response.content);
-        try {
-          const extractedJson = extractJsonFromModelOutput(response.content);
-          const parsed = this.validateModelOutput(extractedJson);
-          if (parsed) {
-            return parsed;
-          }
-        } catch (error) {
-          logger.error(`[${this.modelName}] Failed to extract JSON from response:`, error);
-          const errorMessage = `Failed to extract JSON from response: ${error}`;
-          throw new Error(errorMessage);
+      // Extract system prompt from the prompt object
+      const systemMessage = this.prompt.getSystemMessage();
+      const systemPrompt = systemMessage?.content as string | undefined;
+
+      // Convert messages to prompt string
+      const prompt = this.convertMessagesToPrompt(inputMessages);
+
+      logger.debug('[BaseAgent] Invoking HybridAIClient...');
+
+      // Call HybridAIClient with schema for structured output
+      const response = await this.aiClient.invoke({
+        prompt,
+        system: systemPrompt,
+        schema: this.modelOutputSchema,
+      });
+
+      logger.debug('[BaseAgent] HybridAIClient response received:', {
+        provider: response.provider,
+        contentLength: response.content.length,
+      });
+
+      // Parse response content as JSON and validate with schema
+      try {
+        logger.debug('[BaseAgent] Parsing response content, length:', response.content.length);
+        logger.debug('[BaseAgent] Response preview:', response.content.substring(0, 500));
+
+        const parsed = JSON.parse(response.content);
+        logger.debug('[BaseAgent] Parsed JSON structure:', JSON.stringify(parsed, null, 2).substring(0, 1000));
+
+        const validated = this.validateModelOutput(parsed);
+
+        if (validated) {
+          logger.debug('[BaseAgent] Successfully validated model output');
+          return validated;
         }
+
+        throw new Error('Model output validation failed');
+      } catch (error) {
+        logger.error('[BaseAgent] Failed to parse or validate response:', error);
+        logger.error('[BaseAgent] Response content:', response.content.substring(0, 1000));
+
+        // Try to provide more helpful error message
+        if (error instanceof SyntaxError) {
+          throw new ResponseParseError(`Invalid JSON in response: ${error.message}`);
+        }
+
+        throw new ResponseParseError(
+          `Failed to parse response: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     } catch (error) {
-      logger.error(`[${this.modelName}] LLM call failed in manual extraction mode:`, error);
+      if (isAbortedError(error)) {
+        throw error;
+      }
+      logger.error('[BaseAgent] Invocation failed:', error);
       throw error;
     }
-    const errorMessage = `Failed to parse response from ${this.modelName}`;
-    logger.error(errorMessage);
-    throw new ResponseParseError('Could not parse response');
   }
 
   // Execute the agent and return the result
@@ -203,7 +139,17 @@ export abstract class BaseAgent<T extends z.ZodType, M = unknown> {
     try {
       return this.modelOutputSchema.parse(data);
     } catch (error) {
-      logger.error('validateModelOutput', error);
+      logger.error('[BaseAgent] Validation error:', error);
+
+      // Log the data that failed validation
+      logger.error('[BaseAgent] Data that failed validation:', JSON.stringify(data, null, 2).substring(0, 2000));
+
+      // If it's a Zod error, log the specific issues
+      if (error && typeof error === 'object' && 'issues' in error) {
+        const zodError = error as any;
+        logger.error('[BaseAgent] Validation issues:', JSON.stringify(zodError.issues, null, 2));
+      }
+
       throw new ResponseParseError('Could not validate model output');
     }
   }

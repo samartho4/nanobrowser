@@ -2,11 +2,7 @@
 
 ## Overview
 
-This design outlines the migration of the Nanobrowser Chrome extension to Shannon, replacing the current multi-provider LLM architecture with a Gemini Nano-first approach. The system will use Chrome's built-in AI capabilities (Prompt API, Summarizer, Translator) as the primary inference engine, with a single cloud fallback to Firebase AI Logic → Gemini Developer API.
-
-The migration maintains the existing multi-agent architecture (Planner, Navigator, Validator) while centralizing all LLM interactions behind a unified `HybridAIClient` interface. This approach ensures consistent behavior across agents while enabling seamless fallback when on-device AI is unavailable.
-
-Additionally, the extension will be rebranded from Nanobrowser to Shannon, with new visual identity inspired by Maxwell's demon and information theory.
+This design implements a Gemini Nano-first architecture with Firebase AI Logic SDK fallback. The service worker keeps the existing working GeminiNanoChatModel for on-device inference. When Nano is unavailable, the service worker messages the side panel, which runs Firebase AI Logic Web SDK with `mode: InferenceMode.PREFER_ON_DEVICE` to handle cloud fallback. All non-Google LLM providers are removed.
 
 ## Architecture
 
@@ -14,532 +10,457 @@ Additionally, the extension will be rebranded from Nanobrowser to Shannon, with 
 
 ```mermaid
 graph TB
-    subgraph "Agent Layer"
+    subgraph "Service Worker"
+        Executor[Executor]
+        HybridClient[HybridAIClient]
+        NanoModel[GeminiNanoChatModel<br/>existing, untouched]
         Planner[Planner Agent]
         Navigator[Navigator Agent]
-        Validator[Validator Agent]
     end
     
-    subgraph "Unified Client Layer"
-        HybridClient[HybridAIClient]
+    subgraph "Side Panel Page Context"
+        Bridge[firebaseBridge.ts]
+        FirebaseSDK[Firebase AI Logic SDK<br/>mode: prefer_on_device]
     end
     
-    subgraph "Provider Layer"
-        NanoProvider[GeminiNanoProvider]
-        CloudProvider[CloudFallbackProvider]
+    subgraph "External"
+        ChromeAI[Chrome Built-in AI<br/>Prompt API]
+        Firebase[Firebase AI Logic<br/>Gemini 1.5 Flash]
     end
     
-    subgraph "External Services"
-        ChromeAI[Chrome Built-in AI<br/>Prompt API<br/>Summarizer<br/>Translator]
-        Firebase[Firebase AI Logic]
-        GeminiAPI[Gemini Developer API]
-    end
-    
+    Executor --> HybridClient
     Planner --> HybridClient
     Navigator --> HybridClient
-    Validator --> HybridClient
     
-    HybridClient --> NanoProvider
-    HybridClient --> CloudProvider
+    HybridClient -->|Nano available| NanoModel
+    HybridClient -->|Nano unavailable| Bridge
     
-    NanoProvider --> ChromeAI
-    CloudProvider --> Firebase
-    Firebase --> GeminiAPI
+    NanoModel --> ChromeAI
+    Bridge --> FirebaseSDK
+    FirebaseSDK --> Firebase
 ```
 
-### Component Hierarchy
+### Component Structure
 
 ```
-chrome-extension/src/
-├── background/
+chrome-extension/
+├── src/background/
+│   ├── llm/
+│   │   ├── HybridAIClient.ts (new)
+│   │   ├── constants.ts (new - message types)
+│   │   └── langchain/
+│   │       └── GeminiNanoChatModel.ts (existing, keep)
 │   ├── agent/
+│   │   ├── executor.ts (modify)
 │   │   ├── agents/
-│   │   │   ├── base.ts (modified)
-│   │   │   ├── planner.ts (modified)
-│   │   │   ├── navigator.ts (modified)
-│   │   │   └── validator.ts (if exists, modified)
-│   │   ├── executor.ts (modified)
-│   │   └── helper.ts (deprecated/removed)
-│   └── llm/
-│       ├── client/
-│       │   ├── HybridAIClient.ts (new)
-│       │   └── types.ts (new)
-│       ├── providers/
-│       │   ├── GeminiNanoProvider.ts (new)
-│       │   ├── CloudFallbackProvider.ts (new)
-│       │   └── types.ts (new)
-│       └── utils/
-│           ├── detection.ts (new)
-│           └── errors.ts (new)
+│   │   │   ├── base.ts (modify)
+│   │   │   ├── planner.ts (modify)
+│   │   │   └── navigator.ts (modify)
+│   │   └── helper.ts (remove)
+│   └── index.ts (modify)
+└── pages/side-panel/src/
+    └── firebaseBridge.ts (new)
 ```
 
 ## Components and Interfaces
 
-### 1. HybridAIClient
+### 1. HybridAIClient (Service Worker)
 
-The central client that manages all LLM interactions and implements the fallback strategy.
+Central client that routes to Nano or side panel bridge.
 
 ```typescript
+// chrome-extension/src/background/llm/HybridAIClient.ts
+
 interface InvokeOptions {
   prompt: string;
-  schema?: z.ZodType;
-  systemPrompt?: string;
-  temperature?: number;
-  maxTokens?: number;
-  signal?: AbortSignal;
+  system?: string;
+  schema?: any; // Zod schema or JSON schema
+  stream?: boolean;
 }
 
-interface InvokeResponse<T = unknown> {
+interface InvokeResponse {
   content: string;
-  parsed?: T;
   provider: 'nano' | 'cloud';
-  metadata: {
-    model: string;
-    tokensUsed?: number;
-    latency: number;
-  };
-}
-
-class HybridAIClient {
-  private nanoProvider: GeminiNanoProvider | null;
-  private cloudProvider: CloudFallbackProvider;
-  private forceCloudFallback: boolean;
-  private status: AIStatus;
-
-  constructor(config: HybridAIClientConfig);
-  
-  async invoke<T = unknown>(options: InvokeOptions): Promise<InvokeResponse<T>>;
-  async invokeStream(options: InvokeOptions): AsyncGenerator<string>;
-  
-  getStatus(): AIStatus;
-  setForceCloudFallback(force: boolean): void;
-  
-  private async tryNano<T>(options: InvokeOptions): Promise<InvokeResponse<T> | null>;
-  private async fallbackToCloud<T>(options: InvokeOptions, reason: string): Promise<InvokeResponse<T>>;
 }
 
 interface AIStatus {
-  nanoAvailable: boolean;
-  nanoReady: boolean;
-  currentProvider: 'nano' | 'cloud' | 'unknown';
+  provider: 'nano' | 'cloud' | 'unknown';
+  nano: {
+    availability: 'available' | 'readily' | 'downloading' | 'unavailable';
+  };
   lastError?: string;
 }
-```
 
-**Key Responsibilities:**
-- Detect Gemini Nano availability on initialization
-- Route requests to Nano provider when available
-- Automatically fallback to cloud on failure or unavailability
-- Track and report current AI status
-- Support both structured and unstructured output
-- Maintain streaming capabilities
+class HybridAIClient {
+  private availability: string = 'unavailable';
+  private nanoModel: GeminiNanoChatModel | null = null;
 
-### 2. GeminiNanoProvider
-
-Implements Chrome's built-in AI capabilities.
-
-```typescript
-interface NanoCapabilities {
-  promptAPI: boolean;
-  summarizer: boolean;
-  translator: boolean;
-}
-
-class GeminiNanoProvider {
-  private capabilities: NanoCapabilities;
-  private session: AILanguageModel | null;
-
-  constructor();
-  
-  async initialize(): Promise<boolean>;
-  async checkAvailability(): Promise<NanoCapabilities>;
-  
-  async generateText(prompt: string, options: GenerateOptions): Promise<string>;
-  async generateStructured<T>(prompt: string, schema: z.ZodType<T>, options: GenerateOptions): Promise<T>;
-  async generateStream(prompt: string, options: GenerateOptions): AsyncGenerator<string>;
-  
-  async summarize(text: string, options?: SummarizerOptions): Promise<string>;
-  async translate(text: string, targetLang: string, sourceLang?: string): Promise<string>;
-  
-  async createSession(options?: SessionOptions): Promise<void>;
-  async destroySession(): Promise<void>;
-}
-
-interface GenerateOptions {
-  systemPrompt?: string;
-  temperature?: number;
-  maxTokens?: number;
-  signal?: AbortSignal;
-}
-
-interface SessionOptions {
-  systemPrompt?: string;
-  temperature?: number;
-  topK?: number;
-}
-```
-
-**Key Responsibilities:**
-- Detect and initialize Chrome built-in AI APIs
-- Manage AI session lifecycle
-- Provide text generation with Prompt API
-- Expose Summarizer and Translator helpers
-- Handle Nano-specific errors and limitations
-- Convert between Zod schemas and Nano's expected formats
-
-**Feature Detection:**
-```typescript
-// Detection utility
-async function detectGeminiNano(): Promise<NanoCapabilities> {
-  const capabilities: NanoCapabilities = {
-    promptAPI: false,
-    summarizer: false,
-    translator: false,
-  };
-
-  try {
-    const ai = (globalThis as any)?.ai;
-    
-    if (ai?.languageModel) {
-      const status = await ai.languageModel.capabilities();
-      capabilities.promptAPI = status?.available === 'readily' || status?.available === true;
+  async initialize(): Promise<void> {
+    // Check Nano availability
+    if (globalThis.LanguageModel) {
+      this.availability = await globalThis.LanguageModel.availability();
+      
+      if (this.availability === 'available' || this.availability === 'readily') {
+        this.nanoModel = new GeminiNanoChatModel();
+      }
     }
-    
-    if (ai?.summarizer) {
-      const status = await ai.summarizer.capabilities();
-      capabilities.summarizer = status?.available === 'readily' || status?.available === true;
-    }
-    
-    if (ai?.translator) {
-      const status = await ai.translator.capabilities();
-      capabilities.translator = status?.available === 'readily' || status?.available === true;
-    }
-  } catch (error) {
-    console.warn('Error detecting Gemini Nano capabilities:', error);
   }
-  
-  return capabilities;
+
+  async invoke(options: InvokeOptions): Promise<InvokeResponse> {
+    // Try Nano first if available
+    if (this.nanoModel && (this.availability === 'available' || this.availability === 'readily')) {
+      try {
+        const result = await this.invokeNano(options);
+        return { content: result, provider: 'nano' };
+      } catch (error) {
+        console.warn('[HybridAIClient] Nano failed, falling back to cloud:', error);
+      }
+    }
+
+    // Fallback to side panel bridge
+    return await this.invokeBridge(options);
+  }
+
+  private async invokeNano(options: InvokeOptions): Promise<string> {
+    // Use existing GeminiNanoChatModel
+    // Convert string prompt to LangChain messages
+    const messages: BaseMessage[] = [];
+    if (options.system) {
+      messages.push(new SystemMessage(options.system));
+    }
+    messages.push(new HumanMessage(options.prompt));
+
+    if (options.schema) {
+      // Use withStructuredOutput for schema-based invocation
+      const structured = this.nanoModel!.withStructuredOutput(options.schema);
+      const result = await structured.invoke(messages);
+      return JSON.stringify(result);
+    } else {
+      // Regular invocation
+      const result = await this.nanoModel!.invoke(messages);
+      return result.content as string;
+    }
+  }
+
+  private async invokeBridge(options: InvokeOptions): Promise<InvokeResponse> {
+    const response = await chrome.runtime.sendMessage({
+      type: 'HYBRID_SDK_INVOKE',
+      payload: {
+        prompt: options.prompt,
+        system: options.system,
+        schema: options.schema,
+        stream: options.stream,
+      },
+    });
+
+    if (!response?.ok) {
+      throw new Error(response?.error || 'SDK fallback failed');
+    }
+
+    return {
+      content: response.text,
+      provider: 'cloud',
+    };
+  }
+
+  getStatus(): AIStatus {
+    return {
+      provider: this.nanoModel ? 'nano' : 'cloud',
+      nano: {
+        availability: this.availability as any,
+      },
+    };
+  }
 }
 ```
 
-### 3. CloudFallbackProvider
+### 2. Firebase Bridge (Side Panel)
 
-Implements cloud-based inference through Firebase AI Logic.
+Runs Firebase AI Logic SDK in page context.
 
 ```typescript
-interface FirebaseConfig {
-  endpoint: string;
-  apiKey?: string;
-  projectId?: string;
+// pages/side-panel/src/firebaseBridge.ts
+
+import { initializeApp } from 'firebase/app';
+import { getAI, getGenerativeModel, GoogleAIBackend, InferenceMode, Schema } from 'firebase/ai';
+
+// Message type constant
+const HYBRID_SDK_INVOKE = 'HYBRID_SDK_INVOKE';
+
+// Initialize Firebase (config from storage or env)
+const firebaseConfig = {
+  // Load from extension storage or environment
+  apiKey: 'YOUR_API_KEY',
+  projectId: 'YOUR_PROJECT_ID',
+  // ... other config
+};
+
+const app = initializeApp(firebaseConfig);
+const ai = getAI(app, { backend: new GoogleAIBackend() });
+
+// Create hybrid model: prefer on-device, fallback to cloud
+// Note: model name must be inside inCloudParams
+const model = getGenerativeModel(ai, {
+  mode: InferenceMode.PREFER_ON_DEVICE,
+  inCloudParams: {
+    model: 'gemini-1.5-flash',
+  },
+});
+
+// Listen for fallback requests from service worker
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  if (msg?.type !== HYBRID_SDK_INVOKE) return;
+
+  (async () => {
+    try {
+      const { prompt, system, schema, stream } = msg.payload;
+
+      // Build parts
+      const parts = [];
+      if (system) parts.push({ text: system });
+      parts.push({ text: prompt });
+
+      // Handle structured output if schema provided
+      let modelToUse = model;
+      if (schema) {
+        // Convert schema to Firebase Schema format
+        const firebaseSchema = convertToFirebaseSchema(schema);
+        
+        // Create model with structured output config
+        modelToUse = getGenerativeModel(ai, {
+          mode: InferenceMode.PREFER_ON_DEVICE,
+          inCloudParams: {
+            model: 'gemini-1.5-flash',
+            generationConfig: {
+              responseMimeType: 'application/json',
+              responseSchema: firebaseSchema,
+            },
+          },
+          onDeviceParams: {
+            promptOptions: {
+              responseConstraint: firebaseSchema,
+            },
+          },
+        });
+      }
+
+      // Generate content
+      if (stream) {
+        const streamResp = await modelToUse.generateContentStream(parts);
+        const text = await collectStream(streamResp);
+        sendResponse({ ok: true, provider: 'cloud', text });
+      } else {
+        const resp = await modelToUse.generateContent(parts);
+        const text = resp.response.text();
+        sendResponse({ ok: true, provider: 'cloud', text });
+      }
+    } catch (error) {
+      sendResponse({ ok: false, error: String(error) });
+    }
+  })();
+
+  return true; // async response
+});
+
+// Helper to convert JSON schema to Firebase Schema format
+function convertToFirebaseSchema(jsonSchema: any): any {
+  // Convert JSON schema to Firebase Schema.object() format
+  // This is a simplified example - full implementation would handle all schema types
+  if (jsonSchema.type === 'object' && jsonSchema.properties) {
+    const props: Record<string, any> = {};
+    for (const [key, value] of Object.entries(jsonSchema.properties)) {
+      const propSchema = value as any;
+      if (propSchema.type === 'string') {
+        props[key] = Schema.string();
+      } else if (propSchema.type === 'number') {
+        props[key] = Schema.number();
+      } else if (propSchema.type === 'boolean') {
+        props[key] = Schema.boolean();
+      } else if (propSchema.type === 'array') {
+        props[key] = Schema.array(convertToFirebaseSchema(propSchema.items));
+      } else if (propSchema.type === 'object') {
+        props[key] = convertToFirebaseSchema(propSchema);
+      }
+    }
+    return Schema.object(props);
+  }
+  return jsonSchema;
 }
 
-class CloudFallbackProvider {
-  private config: FirebaseConfig;
-  private geminiModel: string;
-
-  constructor(config: FirebaseConfig);
-  
-  async generateText(prompt: string, options: GenerateOptions): Promise<string>;
-  async generateStructured<T>(prompt: string, schema: z.ZodType<T>, options: GenerateOptions): Promise<T>;
-  async generateStream(prompt: string, options: GenerateOptions): AsyncGenerator<string>;
-  
-  private async callFirebaseFunction(payload: FirebasePayload): Promise<FirebaseResponse>;
-  private buildPayload(prompt: string, options: GenerateOptions, schema?: z.ZodType): FirebasePayload;
-}
-
-interface FirebasePayload {
-  prompt: string;
-  systemPrompt?: string;
-  model: string;
-  temperature?: number;
-  maxTokens?: number;
-  schema?: object;
-}
-
-interface FirebaseResponse {
-  content: string;
-  model: string;
-  tokensUsed?: number;
+async function collectStream(streamResp: any): Promise<string> {
+  let output = '';
+  for await (const chunk of streamResp.stream) {
+    output += chunk.text();
+  }
+  return output;
 }
 ```
 
-**Key Responsibilities:**
-- Call Firebase AI Logic endpoints
-- Format requests for Gemini API compatibility
-- Handle cloud-specific errors and retries
-- Support structured output via Gemini's schema mode
-- Implement streaming responses
+### 3. Modified BaseAgent
 
-### 4. Modified Agent Base Class
-
-Update the base agent to use HybridAIClient instead of BaseChatModel.
+Update to use HybridAIClient instead of BaseChatModel.
 
 ```typescript
+// chrome-extension/src/background/agent/agents/base.ts
+
 export interface BaseAgentOptions {
-  aiClient: HybridAIClient;  // Changed from chatLLM: BaseChatModel
+  aiClient: HybridAIClient; // Changed from chatLLM: BaseChatModel
   context: AgentContext;
   prompt: BasePrompt;
 }
 
 export abstract class BaseAgent<T extends z.ZodType, M = unknown> {
-  protected id: string;
-  protected aiClient: HybridAIClient;  // Changed from chatLLM
-  protected prompt: BasePrompt;
-  protected context: AgentContext;
+  protected aiClient: HybridAIClient; // Changed
   protected modelOutputSchema: T;
-  
-  constructor(modelOutputSchema: T, options: BaseAgentOptions, extraOptions?: Partial<ExtraAgentOptions>) {
+  // ... other fields
+
+  constructor(modelOutputSchema: T, options: BaseAgentOptions) {
+    this.aiClient = options.aiClient;
     this.modelOutputSchema = modelOutputSchema;
-    this.aiClient = options.aiClient;  // Changed
-    this.prompt = options.prompt;
-    this.context = options.context;
-    this.id = extraOptions?.id || 'agent';
+    // ... rest
   }
 
   async invoke(inputMessages: BaseMessage[]): Promise<this['ModelOutput']> {
-    // Convert LangChain messages to simple prompt format
+    // Convert LangChain messages to prompt
     const prompt = this.convertMessagesToPrompt(inputMessages);
     const systemPrompt = this.prompt.getSystemMessage().content as string;
-    
+
+    // Call HybridAIClient
     const response = await this.aiClient.invoke({
       prompt,
-      systemPrompt,
+      system: systemPrompt,
       schema: this.modelOutputSchema,
-      signal: this.context.controller.signal,
     });
-    
-    if (response.parsed) {
-      return response.parsed as this['ModelOutput'];
+
+    // Parse response
+    try {
+      return this.modelOutputSchema.parse(JSON.parse(response.content));
+    } catch {
+      // Fallback parsing
+      return this.parseResponse(response.content);
     }
-    
-    // Fallback to manual parsing
-    return this.parseResponse(response.content);
   }
-  
+
   private convertMessagesToPrompt(messages: BaseMessage[]): string {
-    // Convert LangChain message format to simple string prompt
     return messages
       .map(msg => {
-        if (msg._getType() === 'system') return `System: ${msg.content}`;
-        if (msg._getType() === 'human') return `User: ${msg.content}`;
-        if (msg._getType() === 'ai') return `Assistant: ${msg.content}`;
+        const type = msg._getType();
+        if (type === 'human') return `User: ${msg.content}`;
+        if (type === 'ai') return `Assistant: ${msg.content}`;
         return String(msg.content);
       })
       .join('\n\n');
-  }
-  
-  private parseResponse(content: string): this['ModelOutput'] {
-    // Extract JSON from response and validate against schema
-    const extracted = extractJsonFromModelOutput(content);
-    return this.modelOutputSchema.parse(extracted);
   }
 
   abstract execute(): Promise<AgentOutput<M>>;
 }
 ```
 
-### 5. Modified Executor
+### 4. Modified Executor
 
-Update the Executor to create and pass HybridAIClient to agents.
+Pass HybridAIClient to agents.
 
 ```typescript
+// chrome-extension/src/background/agent/executor.ts
+
 export class Executor {
+  private readonly aiClient: HybridAIClient;
   private readonly navigator: NavigatorAgent;
   private readonly planner: PlannerAgent;
-  private readonly context: AgentContext;
-  private readonly aiClient: HybridAIClient;
-  
+
   constructor(
     task: string,
     taskId: string,
     browserContext: BrowserContext,
-    aiClient: HybridAIClient,  // Changed from navigatorLLM: BaseChatModel
+    aiClient: HybridAIClient, // Changed
     extraArgs?: Partial<ExecutorExtraArgs>,
   ) {
     this.aiClient = aiClient;
-    
-    const messageManager = new MessageManager();
-    const eventManager = new EventManager();
-    const context = new AgentContext(
-      taskId,
-      browserContext,
-      messageManager,
-      eventManager,
-      extraArgs?.agentOptions ?? {},
-    );
 
-    this.context = context;
-    this.navigatorPrompt = new NavigatorPrompt(context.options.maxActionsPerStep);
-    this.plannerPrompt = new PlannerPrompt();
+    // Create context
+    const context = new AgentContext(/* ... */);
 
-    const actionBuilder = new ActionBuilder(context, aiClient);
-    const navigatorActionRegistry = new NavigatorActionRegistry(actionBuilder.buildDefaultActions());
-
-    // Initialize agents with HybridAIClient
+    // Create agents with HybridAIClient
     this.navigator = new NavigatorAgent(navigatorActionRegistry, {
       aiClient: this.aiClient,
-      context: context,
-      prompt: this.navigatorPrompt,
+      context,
+      prompt: navigatorPrompt,
     });
 
     this.planner = new PlannerAgent({
       aiClient: this.aiClient,
-      context: context,
-      prompt: this.plannerPrompt,
+      context,
+      prompt: plannerPrompt,
     });
-
-    // Initialize message history
-    this.context.messageManager.initTaskMessages(this.navigatorPrompt.getSystemMessage(), task);
   }
-  
-  // Rest of the executor remains largely unchanged
+
+  // ... rest of executor
 }
 ```
 
 ## Data Models
 
-### AI Status Model
+### Message Contract
+
+```typescript
+// chrome-extension/src/background/llm/constants.ts
+
+export const HYBRID_SDK_INVOKE = 'HYBRID_SDK_INVOKE';
+
+export interface HybridSDKInvokeMessage {
+  type: typeof HYBRID_SDK_INVOKE;
+  payload: {
+    prompt: string;
+    system?: string;
+    schema?: any;
+    stream?: boolean;
+  };
+}
+
+export interface HybridSDKResponse {
+  ok: boolean;
+  provider?: 'cloud';
+  text?: string;
+  error?: string;
+}
+```
+
+### Status Model
 
 ```typescript
 interface AIStatus {
-  nanoAvailable: boolean;      // Is Nano API available in browser
-  nanoReady: boolean;           // Is Nano initialized and ready
-  currentProvider: 'nano' | 'cloud' | 'unknown';
-  lastError?: string;           // Last error message if any
-  capabilities?: {
-    promptAPI: boolean;
-    summarizer: boolean;
-    translator: boolean;
+  provider: 'nano' | 'cloud' | 'unknown';
+  nano: {
+    availability: 'available' | 'readily' | 'downloading' | 'unavailable';
   };
-}
-```
-
-### Provider Response Model
-
-```typescript
-interface ProviderResponse<T = unknown> {
-  content: string;              // Raw text response
-  parsed?: T;                   // Parsed structured output
-  provider: 'nano' | 'cloud';   // Which provider was used
-  metadata: {
-    model: string;              // Model identifier
-    tokensUsed?: number;        // Token count if available
-    latency: number;            // Response time in ms
-    fallbackReason?: string;    // Why fallback was triggered
-  };
-}
-```
-
-### Configuration Model
-
-```typescript
-interface HybridAIClientConfig {
-  firebaseEndpoint: string;
-  firebaseApiKey?: string;
-  geminiModel?: string;         // Default: 'gemini-1.5-flash'
-  forceCloudFallback?: boolean; // For testing
-  retryAttempts?: number;       // Default: 2
-  timeout?: number;             // Default: 30000ms
+  lastError?: string;
 }
 ```
 
 ## Error Handling
 
-### Error Hierarchy
+### Error Strategy
 
 ```typescript
-class AIError extends Error {
-  constructor(message: string, public provider: 'nano' | 'cloud', public originalError?: Error) {
-    super(message);
-    this.name = 'AIError';
-  }
-}
-
-class NanoUnavailableError extends AIError {
-  constructor(message: string) {
-    super(message, 'nano');
-    this.name = 'NanoUnavailableError';
-  }
-}
-
-class NanoInferenceError extends AIError {
-  constructor(message: string, originalError?: Error) {
-    super(message, 'nano', originalError);
-    this.name = 'NanoInferenceError';
-  }
-}
-
-class CloudFallbackError extends AIError {
-  constructor(message: string, originalError?: Error) {
-    super(message, 'cloud', originalError);
-    this.name = 'CloudFallbackError';
-  }
-}
-
-class SchemaValidationError extends AIError {
-  constructor(message: string, public schema: z.ZodType, provider: 'nano' | 'cloud') {
-    super(message, provider);
-    this.name = 'SchemaValidationError';
-  }
-}
-```
-
-### Fallback Strategy
-
-```typescript
-async function executeWithFallback<T>(
-  options: InvokeOptions,
-  nanoProvider: GeminiNanoProvider | null,
-  cloudProvider: CloudFallbackProvider,
-  forceCloud: boolean
-): Promise<InvokeResponse<T>> {
-  // 1. Check if cloud is forced (dev mode)
-  if (forceCloud) {
-    return await cloudProvider.generateStructured(options.prompt, options.schema, options);
-  }
-  
-  // 2. Try Nano if available
-  if (nanoProvider) {
-    try {
-      const result = await nanoProvider.generateStructured(
-        options.prompt,
-        options.schema,
-        options
-      );
-      return {
-        content: JSON.stringify(result),
-        parsed: result,
-        provider: 'nano',
-        metadata: {
-          model: 'gemini-nano',
-          latency: Date.now() - startTime,
-        },
-      };
-    } catch (error) {
-      console.warn('Nano inference failed, falling back to cloud:', error);
-      // Continue to cloud fallback
+class HybridAIClient {
+  async invoke(options: InvokeOptions): Promise<InvokeResponse> {
+    // 1. Try Nano if available
+    if (this.nanoModel) {
+      try {
+        return await this.invokeNano(options);
+      } catch (error) {
+        console.warn('[HybridAIClient] Nano failed:', error);
+        // Continue to fallback
+      }
     }
-  }
-  
-  // 3. Fallback to cloud
-  try {
-    const result = await cloudProvider.generateStructured(
-      options.prompt,
-      options.schema,
-      options
-    );
-    return {
-      content: JSON.stringify(result),
-      parsed: result,
-      provider: 'cloud',
-      metadata: {
-        model: 'gemini-1.5-flash',
-        latency: Date.now() - startTime,
-        fallbackReason: nanoProvider ? 'nano_failed' : 'nano_unavailable',
-      },
-    };
-  } catch (error) {
-    throw new CloudFallbackError('All inference methods failed', error);
+
+    // 2. Fallback to bridge
+    try {
+      return await this.invokeBridge(options);
+    } catch (error) {
+      console.error('[HybridAIClient] Bridge failed:', error);
+      throw new Error('All inference methods failed');
+    }
   }
 }
 ```
@@ -548,278 +469,150 @@ async function executeWithFallback<T>(
 
 ### Unit Tests
 
-1. **GeminiNanoProvider Tests**
-   - Mock Chrome AI APIs
-   - Test capability detection
-   - Test session management
-   - Test error handling
-   - Test structured output parsing
+1. **HybridAIClient Tests**
+   - Mock `globalThis.LanguageModel.availability()` to return 'available'
+   - Assert Nano path is used
+   - Mock to return 'unavailable'
+   - Assert bridge path is used
 
-2. **CloudFallbackProvider Tests**
-   - Mock Firebase endpoints
-   - Test request formatting
-   - Test response parsing
-   - Test retry logic
-   - Test timeout handling
-
-3. **HybridAIClient Tests**
-   - Test provider selection logic
-   - Test fallback mechanism
-   - Test status reporting
-   - Test force cloud mode
-   - Test concurrent requests
+2. **Bridge Tests**
+   - Mock Firebase SDK
+   - Test message handling
+   - Test error responses
 
 ### Integration Tests
 
-1. **Agent Integration**
+1. **Agent Tests**
    - Test Planner with HybridAIClient
    - Test Navigator with HybridAIClient
-   - Test Validator with HybridAIClient
-   - Verify functional equivalence with old system
+   - Verify functional equivalence
 
-2. **End-to-End Tests**
-   - Test complete task execution with Nano
-   - Test complete task execution with cloud fallback
-   - Test switching between providers mid-task
-   - Test error recovery
+2. **E2E Tests**
+   - Test with Nano enabled
+   - Test with Nano disabled
+   - Verify status chip updates
 
-### Manual Testing
+## Manifest Configuration
 
-1. **Nano Availability Testing**
-   - Test in Chrome Canary with Nano enabled
-   - Test in Chrome stable without Nano
-   - Test fallback behavior
+```javascript
+// manifest.js
 
-2. **UI Testing**
-   - Verify status badge displays correctly
-   - Test force cloud toggle
-   - Verify no UI regressions
-
-3. **Performance Testing**
-   - Measure Nano vs cloud latency
-   - Test memory usage
-   - Test concurrent task handling
-
-## Branding Update: Nanobrowser → Shannon
-
-### Visual Identity
-
-**Logo Design Concept:**
-- Inspired by Maxwell's demon, a thought experiment in thermodynamics
-- Visual elements suggesting information sorting and entropy
-- Color scheme: Deep blues and purples suggesting intelligence and technology
-- Demon figure should be stylized, modern, not scary
-- Incorporate subtle references to information theory (binary, entropy symbols)
-
-**Logo Specifications:**
-- 128x128px for extension icon
-- 32x32px for toolbar icon
-- SVG format for scalability
-- PNG fallbacks for compatibility
-
-### Text Updates
-
-Files requiring branding updates:
-1. `manifest.js` - Extension name
-2. `package.json` - Package name and description
-3. `README.md` and localized versions
-4. `chrome-extension/public/_locales/*/messages.json` - All locale files
-5. UI components - Side panel, options page, etc.
-6. Documentation files
-
-**Naming Convention:**
-- Extension name: "Shannon"
-- Package name: `@shannon/chrome-extension`
-- Description: "Shannon - AI-powered browser automation with on-device intelligence"
-
-### Migration Checklist
-
-```typescript
-// Files to update for branding
-const brandingUpdates = [
-  'manifest.js',
-  'package.json',
-  'README*.md',
-  'chrome-extension/public/_locales/*/messages.json',
-  'chrome-extension/src/pages/*/index.tsx',
-  'chrome-extension/public/icon-*.png',
-  // Add all UI component files
-];
-```
-
-## Implementation Phases
-
-### Phase 1: Core Infrastructure (Foundation)
-- Create `llm/` directory structure
-- Implement `GeminiNanoProvider` with detection
-- Implement `CloudFallbackProvider` with Firebase integration
-- Implement `HybridAIClient` with basic fallback logic
-- Add error classes and utilities
-
-### Phase 2: Agent Integration (Migration)
-- Modify `BaseAgent` to use `HybridAIClient`
-- Update `Executor` to create and pass `HybridAIClient`
-- Update `PlannerAgent` to use new interface
-- Update `NavigatorAgent` to use new interface
-- Update any validator or other agents
-
-### Phase 3: Provider Cleanup (Removal)
-- Remove `helper.ts` and provider creation logic
-- Remove LangChain provider dependencies from `package.json`
-- Remove provider selection UI components
-- Remove provider configuration from storage
-- Clean up unused imports and types
-
-### Phase 4: UI Integration (Status Display)
-- Add status badge to side panel
-- Implement status polling/updates
-- Add force cloud toggle in settings
-- Update options page if needed
-
-### Phase 5: Branding Update (Shannon)
-- Design and create new logo assets
-- Update all text references
-- Update manifest and package files
-- Update documentation
-- Update locale files
-
-### Phase 6: Testing and Validation
-- Run unit tests
-- Run integration tests
-- Manual testing in Chrome Canary (with Nano)
-- Manual testing in Chrome stable (without Nano)
-- Performance benchmarking
-- User acceptance testing
-
-## Configuration and Environment
-
-### Environment Variables
-
-```typescript
-// .env or config
-FIREBASE_AI_ENDPOINT=https://us-central1-project.cloudfunctions.net/aiLogic
-FIREBASE_API_KEY=optional_api_key
-GEMINI_MODEL=gemini-1.5-flash
-FORCE_CLOUD_FALLBACK=false
-```
-
-### Storage Schema
-
-```typescript
-interface ExtensionSettings {
-  ai: {
-    forceCloudFallback: boolean;
-    preferredModel: string;
-    lastKnownStatus: AIStatus;
-  };
-  // ... other settings
+{
+  manifest_version: 3,
+  name: 'Shannon', // Rebranded
+  permissions: [
+    'storage',
+    'activeTab',
+    'scripting',
+    'sidePanel',
+    'alarms',
+  ],
+  host_permissions: [
+    '<all_urls>', // For Firebase domains
+  ],
+  content_security_policy: {
+    extension_pages: "script-src 'self'; object-src 'self'; connect-src 'self' https://firebasevertexai.googleapis.com https://firebasestorage.googleapis.com https://www.googleapis.com https://generativelanguage.googleapis.com"
+  },
+  background: {
+    service_worker: 'background.js',
+    type: 'module',
+  },
+  side_panel: {
+    default_path: 'side-panel.html',
+  },
 }
 ```
 
-### Manifest Updates
+## Shannon Branding
 
-```javascript
-// manifest.js changes
-const manifest = {
-  manifest_version: 3,
-  name: 'Shannon',  // Changed from Nanobrowser
-  // Remove host_permissions for non-Google LLM providers
-  // Keep only necessary permissions
-  permissions: [
-    'storage',
-    'scripting',
-    'tabs',
-    'activeTab',
-    'debugger',
-    'unlimitedStorage',
-    'webNavigation',
-    'sidePanel',  // Already present
-  ],
-  // Add if needed for Chrome AI APIs
-  // permissions: ['aiLanguageModelOriginTrial'],
-};
-```
+### Visual Identity
+
+**Logo Concept:**
+- Inspired by Maxwell's demon (thought experiment in thermodynamics/information theory)
+- Stylized demon figure sorting information
+- Color scheme: Deep blues and purples
+- Modern, friendly, not scary
+- Subtle binary/entropy symbols
+
+**Assets:**
+- 128x128px: `chrome-extension/public/icon-128.png`
+- 32x32px: `chrome-extension/public/icon-32.png`
+- SVG source for scalability
+
+### Text Updates
+
+Files to update:
+- `manifest.js` - name: "Shannon"
+- `package.json` - name, description
+- `README.md` and localized versions
+- All UI components
+- Locale files in `chrome-extension/public/_locales/*/messages.json`
+
+## Implementation Phases
+
+### Phase 1: Core Infrastructure
+- Create `HybridAIClient.ts`
+- Create `constants.ts` for message types
+- Create `firebaseBridge.ts` in side panel
+- Add Firebase dependencies
+
+### Phase 2: Agent Integration
+- Modify `BaseAgent` to use `HybridAIClient`
+- Update `Executor` to create and pass `HybridAIClient`
+- Update `Planner` and `Navigator`
+
+### Phase 3: Cleanup
+- Remove `helper.ts`
+- Remove non-Google provider imports
+- Clean `package.json` dependencies
+- Remove provider UI components
+
+### Phase 4: UI & Status
+- Add status chip to side panel
+- Wire status updates from `HybridAIClient.getStatus()`
+
+### Phase 5: Branding
+- Design Shannon logo
+- Update all text references
+- Update manifest and docs
+
+### Phase 6: Testing
+- Unit tests for HybridAIClient
+- Integration tests for agents
+- E2E tests for both paths
 
 ## Security Considerations
 
-1. **API Key Management**
-   - Store Firebase API key securely in extension storage
-   - Never expose keys in client-side code
-   - Use environment variables for development
-
-2. **Data Privacy**
-   - Prefer on-device (Nano) for sensitive data
-   - Log fallback events for transparency
-   - Allow users to see which provider is being used
-
-3. **Content Security**
-   - Validate all responses from both providers
-   - Sanitize user inputs before sending to APIs
-   - Implement rate limiting for cloud calls
-
-4. **Permissions**
-   - Request minimal permissions
-   - Remove unnecessary host permissions
-   - Document why each permission is needed
+1. **Firebase Config**: Store API keys in extension storage, not hardcoded
+2. **CSP**: Restrict connect-src to only Firebase domains
+3. **Permissions**: Minimal necessary permissions
+4. **Data Privacy**: Prefer on-device (Nano) for sensitive data
 
 ## Performance Considerations
 
-1. **Latency**
+1. **Latency**:
    - Nano: ~100-500ms (on-device)
    - Cloud: ~1-3s (network + inference)
-   - Implement request timeout (30s default)
 
-2. **Memory**
-   - Nano session management to prevent leaks
-   - Limit concurrent requests
-   - Clean up sessions after use
+2. **Session Management**:
+   - Reuse Nano sessions (already implemented in GeminiNanoChatModel)
+   - Clean up on extension unload
 
-3. **Caching**
-   - Cache Nano availability check (5 min TTL)
-   - Cache Firebase endpoint configuration
-   - Consider response caching for repeated queries
-
-4. **Optimization**
-   - Batch requests when possible
-   - Use streaming for long responses
-   - Implement request queuing for rate limiting
+3. **Message Passing**:
+   - Async message handling
+   - Timeout handling for bridge calls
 
 ## Migration Path
 
-### Backward Compatibility
-
-During migration, maintain compatibility:
-1. Keep old provider code temporarily
-2. Add feature flag to switch between old/new systems
-3. Run both systems in parallel for testing
-4. Gradual rollout to users
-
-### Rollback Plan
-
-If issues arise:
-1. Feature flag to disable new system
-2. Revert to previous LangChain-based architecture
-3. Keep old dependencies until migration is stable
-4. Monitor error rates and user feedback
+1. Keep existing code working during development
+2. Test HybridAIClient in parallel
+3. Gradual rollout to agents
+4. Remove old providers after verification
+5. Monitor error rates and fallback frequency
 
 ## Success Metrics
 
-1. **Functional Metrics**
-   - All existing tests pass
-   - No regression in task completion rate
-   - Fallback mechanism works reliably
-
-2. **Performance Metrics**
-   - Nano usage rate (when available)
-   - Average response latency
-   - Cloud fallback frequency
-
-3. **Code Quality Metrics**
-   - Reduced dependency count
-   - Smaller bundle size
-   - Improved code maintainability
-
-4. **User Experience Metrics**
-   - User satisfaction with speed
-   - Transparency of provider usage
-   - Error rate reduction
+1. **Functional**: All tests pass, no regressions
+2. **Performance**: Nano usage rate when available
+3. **Code Quality**: Reduced dependencies, smaller bundle
+4. **User Experience**: Transparent provider usage, fast responses

@@ -1,29 +1,22 @@
 import 'webextension-polyfill';
-import {
-  agentModelStore,
-  AgentNameEnum,
-  firewallStore,
-  generalSettingsStore,
-  llmProviderStore,
-  analyticsSettingsStore,
-} from '@extension/storage';
+import { firewallStore, generalSettingsStore, llmProviderStore, analyticsSettingsStore } from '@extension/storage';
 import { t } from '@extension/i18n';
 import BrowserContext from './browser/context';
 import { Executor } from './agent/executor';
 import { createLogger } from './log';
 import { ExecutionState } from './agent/event/types';
-import { createChatModel } from './agent/helper';
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { DEFAULT_AGENT_OPTIONS } from './agent/types';
 import { SpeechToTextService } from './services/speechToText';
 import { injectBuildDomTreeScripts } from './browser/dom/service';
 import { analytics } from './services/analytics';
+import { HybridAIClient } from './llm/HybridAIClient';
 
 const logger = createLogger('background');
 
 const browserContext = new BrowserContext({});
 let currentExecutor: Executor | null = null;
 let currentPort: chrome.runtime.Port | null = null;
+let hybridAIClient: HybridAIClient | null = null;
 
 // Setup side panel behavior
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(error => console.error(error));
@@ -53,6 +46,19 @@ chrome.tabs.onRemoved.addListener(tabId => {
 
 logger.info('background loaded');
 
+// Initialize HybridAIClient
+(async () => {
+  try {
+    hybridAIClient = new HybridAIClient();
+    await hybridAIClient.initialize();
+    const status = hybridAIClient.getStatus();
+    logger.info('HybridAIClient initialized:', status);
+  } catch (error) {
+    logger.error('Failed to initialize HybridAIClient:', error);
+    // Continue without HybridAIClient - will be created on-demand if needed
+  }
+})();
+
 // Initialize analytics
 analytics.init().catch(error => {
   logger.error('Failed to initialize analytics:', error);
@@ -66,10 +72,21 @@ analyticsSettingsStore.subscribe(() => {
 });
 
 // Listen for simple messages (e.g., from options page)
-chrome.runtime.onMessage.addListener(() => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  // Handle get_ai_status message
+  if (message.type === 'get_ai_status') {
+    if (hybridAIClient) {
+      const status = hybridAIClient.getStatus();
+      sendResponse({ status });
+    } else {
+      sendResponse({ status: null });
+    }
+    return true; // Indicates async response
+  }
+
   // Handle other message types if needed in the future
   // Return false if response is not sent asynchronously
-  // return false;
+  return false;
 });
 
 // Setup connection listener for long-lived connections (e.g., side panel)
@@ -256,38 +273,18 @@ chrome.runtime.onConnect.addListener(port => {
 });
 
 async function setupExecutor(taskId: string, task: string, browserContext: BrowserContext) {
-  const providers = await llmProviderStore.getAllProviders();
-  // if no providers, need to display the options page
-  if (Object.keys(providers).length === 0) {
-    throw new Error(t('bg_setup_noApiKeys'));
-  }
-
-  // Clean up any legacy validator settings for backward compatibility
-  await agentModelStore.cleanupLegacyValidatorSettings();
-
-  const agentModels = await agentModelStore.getAllAgentModels();
-  // verify if every provider used in the agent models exists in the providers
-  for (const agentModel of Object.values(agentModels)) {
-    if (!providers[agentModel.provider]) {
-      throw new Error(t('bg_setup_noProvider', [agentModel.provider]));
+  // Ensure HybridAIClient is initialized
+  if (!hybridAIClient) {
+    try {
+      logger.info('HybridAIClient not initialized, creating new instance...');
+      hybridAIClient = new HybridAIClient();
+      await hybridAIClient.initialize();
+      const status = hybridAIClient.getStatus();
+      logger.info('HybridAIClient initialized on-demand:', status);
+    } catch (error) {
+      logger.error('Failed to initialize HybridAIClient:', error);
+      throw new Error(`Failed to initialize AI client: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }
-
-  const navigatorModel = agentModels[AgentNameEnum.Navigator];
-  if (!navigatorModel) {
-    throw new Error(t('bg_setup_noNavigatorModel'));
-  }
-  // Log the provider config being used for the navigator
-  const navigatorProviderConfig = providers[navigatorModel.provider];
-  const tabId = browserContext.getCurrentTabId() ?? undefined;
-  const navigatorLLM = createChatModel(navigatorProviderConfig, navigatorModel, tabId);
-
-  let plannerLLM: BaseChatModel | null = null;
-  const plannerModel = agentModels[AgentNameEnum.Planner];
-  if (plannerModel) {
-    // Log the provider config being used for the planner
-    const plannerProviderConfig = providers[plannerModel.provider];
-    plannerLLM = createChatModel(plannerProviderConfig, plannerModel, tabId);
   }
 
   // Apply firewall settings to browser context
@@ -310,8 +307,7 @@ async function setupExecutor(taskId: string, task: string, browserContext: Brows
     displayHighlights: generalSettings.displayHighlights,
   });
 
-  const executor = new Executor(task, taskId, browserContext, navigatorLLM, {
-    plannerLLM: plannerLLM ?? navigatorLLM,
+  const executor = new Executor(task, taskId, browserContext, hybridAIClient, {
     agentOptions: {
       maxSteps: generalSettings.maxSteps,
       maxFailures: generalSettings.maxFailures,

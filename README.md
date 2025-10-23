@@ -13,33 +13,34 @@
 
 </div>
 
-## 🌐 Nanobrowser
+## 🌐 Shannon
 
-Nanobrowser is an open-source AI web automation tool that runs in your browser. A free alternative to OpenAI Operator with flexible LLM options and multi-agent system.
+Shannon is an open-source AI web automation tool powered by Gemini Nano and Firebase AI. Named after Claude Shannon, the father of information theory, it brings intelligent web automation directly to your browser with on-device AI and seamless cloud fallback.
 
-⬇️ Get [Nanobrowser from Chrome Web Store](https://chromewebstore.google.com/detail/nanobrowser/imbddededgmcgfhfpcjmijokokekbkal) for free
+⬇️ Get Shannon from Chrome Web Store (coming soon)
 
 👏 Join the community in [Discord](https://discord.gg/NN3ABHggMK) | [X](https://x.com/nanobrowser_ai)
 
-🌟 Loving Nanobrowser? Give us a star  and help spread the word!
+🌟 Loving Shannon? Give us a star and help spread the word!
 
-❤️ Support the project by [sponsoring us](https://github.com/sponsors/alexchenzl) - every contribution helps keep Nanobrowser free and open source!
+❤️ Support the project by [sponsoring us](https://github.com/sponsors/alexchenzl) - every contribution helps keep Shannon free and open source!
 
 <div align="center">
-<img src="https://github.com/user-attachments/assets/112c4385-7b03-4b81-a352-4f348093351b" width="600" alt="Nanobrowser Demo GIF" />
-<p><em>Nanobrowser's multi-agent system analyzing HuggingFace in real-time, with the Planner intelligently self-correcting when encountering obstacles and dynamically instructing the Navigator to adjust its approach—all running locally in your browser.</em></p>
+<img src="https://github.com/user-attachments/assets/112c4385-7b03-4b81-a352-4f348093351b" width="600" alt="Shannon Demo GIF" />
+<p><em>Shannon's multi-agent system analyzing HuggingFace in real-time, with the Planner intelligently self-correcting when encountering obstacles and dynamically instructing the Navigator to adjust its approach—all running locally in your browser with Gemini Nano.</em></p>
 </div>
 
-## 🔥Why Nanobrowser?
+## 🔥Why Shannon?
 
-Looking for a powerful AI browser agent without the $200/month price tag of OpenAI Operator? **Nanobrowser** , as a chrome extension, delivers premium web automation capabilities while keeping you in complete control:
+Looking for a powerful AI browser agent without the $200/month price tag of OpenAI Operator? **Shannon**, as a Chrome extension, delivers premium web automation capabilities with cutting-edge on-device AI while keeping you in complete control:
 
-- **100% Free** - No subscription fees or hidden costs. Just install and use your own API keys, and you only pay what you use with your own API keys.
-- **Privacy-Focused** - Everything runs in your local browser. Your credentials stay with you, never shared with any cloud service.
-- **Flexible LLM Options** - Connect to your preferred LLM providers with the freedom to choose different models for different agents.
+- **On-Device AI First** - Powered by Chrome's built-in Gemini Nano for fast, private inference that keeps your data local.
+- **Seamless Cloud Fallback** - Automatically switches to Firebase AI (Gemini 1.5 Flash) when on-device AI is unavailable.
+- **Privacy-Focused** - Prefers on-device processing. Your data stays local whenever possible.
 - **Fully Open Source** - Complete transparency in how your browser is automated. No black boxes or hidden processes.
+- **Simple & Focused** - Single, optimized AI stack with Gemini Nano and Firebase AI Logic SDK.
 
-> **Note:** We currently support OpenAI, Anthropic, Gemini, Gemini Nano (Chrome's built-in AI), Ollama, Groq, Cerebras, Llama and custom OpenAI-Compatible providers. More providers will be supported.
+> **Gemini Nano Integration:** Shannon uses Chrome's built-in Gemini Nano AI for on-device inference with automatic cloud fallback via Firebase AI Logic SDK. See [GEMINI_NANO_GUIDE.md](GEMINI_NANO_GUIDE.md) for setup instructions.
 
 
 ## 📊 Key Features
@@ -61,52 +62,49 @@ Looking for a powerful AI browser agent without the $200/month price tag of Open
 **Not Supported:**
 - Firefox, Safari, and other Chromium variants (Opera, Arc, etc.)
 
-> **Note**: While Nanobrowser may function on other Chromium-based browsers, we recommend using Chrome or Edge for the best experience and guaranteed compatibility.
+> **Note**: While Shannon may function on other Chromium-based browsers, we recommend using Chrome or Edge for the best experience and guaranteed compatibility with Gemini Nano.
 
 
 ## 🚀 Quick Start
 
-1. **Install from Chrome Web Store** (Stable Version):
-   * Visit the [Nanobrowser Chrome Web Store page](https://chromewebstore.google.com/detail/nanobrowser/imbddededgmcgfhfpcjmijokokekbkal)
-   * Click "Add to Chrome" button
-   * Confirm the installation when prompted
+1. **Install from Chrome Web Store** (Coming Soon):
+   * Shannon will be available on the Chrome Web Store soon
+   * For now, please build from source or install manually (see below)
 
-> **Important Note**: For latest features, install from ["Manually Install Latest Version"](#-manually-install-latest-version) below, as Chrome Web Store version may be delayed due to review process.
-
-2. **Configure Agent Models**:
-   * Click the Nanobrowser icon in your toolbar to open the sidebar
+2. **Configure Firebase API**:
+   * Click the Shannon icon in your toolbar to open the sidebar
    * Click the `Settings` icon (top right)
-   * Add your LLM API keys
-   * Choose which model to use for different agents (Navigator, Planner)
+   * Add your Firebase API key for cloud fallback
+   * Gemini Nano will be used automatically when available
 
 ## 🔧 Manually Install Latest Version
 
 To get the most recent version with all the latest features:
 
 1. **Download**
-    * Download the latest `nanobrowser.zip` file from the official Github [release page](https://github.com/nanobrowser/nanobrowser/releases).
+    * Download the latest `shannon.zip` file from the official Github [release page](https://github.com/nanobrowser/nanobrowser/releases).
 
 2. **Install**:
-    * Unzip `nanobrowser.zip`.
+    * Unzip `shannon.zip`.
     * Open `chrome://extensions/` in Chrome
     * Enable `Developer mode` (top right)
     * Click `Load unpacked` (top left)
-    * Select the unzipped `nanobrowser` folder.
+    * Select the unzipped `shannon` folder.
 
-3. **Configure Agent Models**
-    * Click the Nanobrowser icon in your toolbar to open the sidebar
+3. **Configure Firebase API**
+    * Click the Shannon icon in your toolbar to open the sidebar
     * Click the `Settings` icon (top right).
-    * Add your LLM API keys.
-    * Choose which model to use for different agents (Navigator, Planner)
+    * Add your Firebase API key for cloud fallback.
+    * Gemini Nano will be used automatically when available.
 
 4. **Upgrading**:
-    * Download the latest `nanobrowser.zip` file from the release page.
-    * Unzip and replace your existing Nanobrowser files with the new ones.
-    * Go to `chrome://extensions/` in Chrome and click the refresh icon on the Nanobrowser card.
+    * Download the latest `shannon.zip` file from the release page.
+    * Unzip and replace your existing Shannon files with the new ones.
+    * Go to `chrome://extensions/` in Chrome and click the refresh icon on the Shannon card.
 
 ## 🛠️ Build from Source
 
-If you prefer to build Nanobrowser yourself, follow these steps:
+If you prefer to build Shannon yourself, follow these steps:
 
 1. **Prerequisites**:
    * [Node.js](https://nodejs.org/) (v22.12.0 or higher)
@@ -137,9 +135,9 @@ If you prefer to build Nanobrowser yourself, follow these steps:
    pnpm dev
    ```
 
-## 🤖 Choosing Your Models
+## 🤖 AI Model Architecture
 
-Nanobrowser allows you to configure different LLM models for each agent to balance performance and cost. Here are recommended configurations:
+Shannon uses a hybrid AI approach with Gemini Nano for on-device inference and Firebase AI (Gemini 1.5 Flash) for cloud fallback:
 
 ### Better Performance
 - **Planner**: Claude Sonnet 4
@@ -194,7 +192,7 @@ Here are some powerful tasks you can accomplish with just a sentence:
 
 ## 🛠️ Roadmap
 
-We're actively developing Nanobrowser with exciting features on the horizon, welcome to join us! 
+We're actively developing Shannon with exciting features on the horizon, welcome to join us! 
 
 Check out our detailed roadmap and upcoming features in our [GitHub Discussions](https://github.com/nanobrowser/nanobrowser/discussions/85). 
 
@@ -221,7 +219,7 @@ If you discover a security vulnerability, please **DO NOT** disclose it publicly
 
 Instead, please create a [GitHub Security Advisory](https://github.com/nanobrowser/nanobrowser/security/advisories/new) to report the vulnerability responsibly. This allows us to address the issue before it's publicly disclosed.
 
-We appreciate your help in keeping Nanobrowser and its users safe!
+We appreciate your help in keeping Shannon and its users safe!
 
 ## 💬 Community
 
@@ -233,7 +231,7 @@ Join our growing community of developers and users:
 
 ## 👏 Acknowledgments
 
-Nanobrowser builds on top of other awesome open-source projects:
+Shannon builds on top of other awesome open-source projects:
 
 - [Browser Use](https://github.com/browser-use/browser-use)
 - [Puppeteer](https://github.com/EmergenceAI/Agent-E)
@@ -246,9 +244,9 @@ Huge thanks to their creators and contributors!
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
-Made with ❤️ by the Nanobrowser Team. 
+Made with ❤️ by the Shannon Team. 
 
-Like Nanobrowser? Give us a star 🌟 and join us in [Discord](https://discord.gg/NN3ABHggMK) | [X](https://x.com/nanobrowser_ai)
+Like Shannon? Give us a star 🌟 and join us in [Discord](https://discord.gg/NN3ABHggMK) | [X](https://x.com/nanobrowser_ai)
 
 ## ⚠️ DISCLAIMER ON DERIVATIVE PROJECTS
 

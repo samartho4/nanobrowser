@@ -39,7 +39,7 @@ function withOperaSidebar(manifest) {
   return deepmerge(manifest, {
     sidebar_action: {
       default_panel: 'side-panel/index.html',
-      default_title: 'Nanobrowser',
+      default_title: 'Shannon',
       default_icon: 'icon-32.png',
     },
   });
@@ -57,11 +57,20 @@ const manifest = withOperaSidebar(
      * if you want to support multiple languages, you can use the following reference
      * https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/Internationalization
      */
-    name: '__MSG_app_metadata_name__',
+    name: 'Shannon',
     version: packageJson.version,
     description: '__MSG_app_metadata_description__',
     host_permissions: ['<all_urls>'],
-    permissions: ['storage', 'scripting', 'tabs', 'activeTab', 'debugger', 'unlimitedStorage', 'webNavigation'],
+    permissions: [
+      'storage',
+      'scripting',
+      'tabs',
+      'activeTab',
+      'debugger',
+      'unlimitedStorage',
+      'webNavigation',
+      'alarms',
+    ],
     options_page: 'options/index.html',
     background: {
       service_worker: 'background.iife.js',
@@ -80,6 +89,10 @@ const manifest = withOperaSidebar(
         js: ['content/index.iife.js'],
       },
     ],
+    content_security_policy: {
+      extension_pages:
+        "script-src 'self'; object-src 'self'; connect-src 'self' https://firebasevertexai.googleapis.com https://firebasestorage.googleapis.com https://www.googleapis.com https://generativelanguage.googleapis.com",
+    },
     web_accessible_resources: [
       {
         resources: [

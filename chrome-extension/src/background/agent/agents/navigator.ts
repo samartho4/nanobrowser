@@ -5,7 +5,7 @@ import { ActionResult, type AgentOutput } from '../types';
 import type { Action } from '../actions/builder';
 import { buildDynamicActionSchema } from '../actions/builder';
 import { agentBrainSchema } from '../types';
-import { type BaseMessage, HumanMessage } from '@langchain/core/messages';
+import { HumanMessage } from '@langchain/core/messages';
 import { Actors, ExecutionState } from '../event/types';
 import {
   ChatModelAuthError,
@@ -18,13 +18,12 @@ import {
   isBadRequestError,
   isExtensionConflictError,
   isForbiddenError,
-  ResponseParseError,
   LLM_FORBIDDEN_ERROR_MESSAGE,
   RequestCancelledError,
 } from './errors';
 import { calcBranchPathHashSet } from '@src/background/browser/dom/views';
 import { type BrowserState, BrowserStateHistory, URLNotAllowedError } from '@src/background/browser/views';
-import { convertZodToJsonSchema, repairJsonString } from '@src/background/utils';
+import { repairJsonString } from '@src/background/utils';
 import { HistoryTreeProcessor } from '@src/background/browser/dom/history/service';
 import { AgentStepRecord } from '../history';
 import { type DOMHistoryElement } from '@src/background/browser/dom/history/view';
@@ -74,7 +73,6 @@ export interface NavigatorResult {
 
 export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
   private actionRegistry: NavigatorActionRegistry;
-  private jsonSchema: Record<string, unknown>;
 
   constructor(
     actionRegistry: NavigatorActionRegistry,
@@ -84,186 +82,10 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
     super(actionRegistry.setupModelOutputSchema(), options, { ...extraOptions, id: 'navigator' });
 
     this.actionRegistry = actionRegistry;
-
-    // The zod object is too complex to be used directly, so we need to convert it to json schema first for the model to use
-    this.jsonSchema = convertZodToJsonSchema(this.modelOutputSchema, 'NavigatorAgentOutput', true);
   }
 
-  /**
-   * Create simplified schema for Gemini Nano
-   * Defines ALL possible parameters upfront to prevent Gemini from being creative with field names
-   * Per Gemini docs: "lots of optional properties" causes issues, but we need to be explicit
-   */
-  private createSimplifiedSchema(): Record<string, unknown> {
-    // Get all action names from the registry
-    const actionNames = Object.keys(this.actionRegistry['actions']);
-
-    // Build action descriptions
-    const actions = Object.values(this.actionRegistry['actions']) as Action[];
-    const actionDescriptions: string[] = [];
-
-    for (const action of actions) {
-      actionDescriptions.push(`${action.name()}: ${action.schema.description}`);
-    }
-
-    // Define ALL possible parameters that ANY action might use
-    // This prevents Gemini Nano from inventing its own field names
-    return {
-      type: 'object',
-      properties: {
-        current_state: {
-          type: 'object',
-          properties: {
-            evaluation_previous_goal: { type: 'string' },
-            memory: { type: 'string' },
-            next_goal: { type: 'string' },
-          },
-          required: ['evaluation_previous_goal', 'memory', 'next_goal'],
-        },
-        action: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              action_type: {
-                type: 'string',
-                enum: actionNames,
-                description: `Action to perform. Available actions:\n${actionDescriptions.join('\n')}`,
-              },
-              parameters: {
-                type: 'object',
-                description: 'Parameters for the action. Only include fields relevant to the action_type.',
-                properties: {
-                  // Common fields
-                  intent: { type: 'string', description: 'purpose of this action' },
-
-                  // Navigation fields
-                  url: { type: 'string', description: 'URL to navigate to or open' },
-                  query: { type: 'string', description: 'search query for Google' },
-
-                  // Element interaction fields
-                  index: { type: 'integer', description: 'index of the element to interact with' },
-                  xpath: { type: 'string', description: 'xpath of the element (optional)' },
-                  text: { type: 'string', description: 'text to input or option text to select' },
-
-                  // Tab management fields
-                  tab_id: { type: 'integer', description: 'id of the tab' },
-
-                  // Scroll fields
-                  yPercent: { type: 'integer', description: 'percentage to scroll to (0-100)' },
-                  nth: { type: 'integer', description: 'which occurrence (1-indexed)' },
-
-                  // Cache fields
-                  content: { type: 'string', description: 'content to cache' },
-
-                  // Keyboard fields
-                  keys: { type: 'string', description: 'keys to send' },
-
-                  // Wait fields
-                  seconds: { type: 'integer', description: 'seconds to wait' },
-
-                  // Done fields
-                  success: { type: 'boolean', description: 'whether task succeeded' },
-                },
-              },
-            },
-            required: ['action_type', 'parameters'],
-          },
-        },
-      },
-      required: ['current_state', 'action'],
-    };
-  }
-
-  /**
-   * Convert simplified Gemini Nano response to expected format
-   * From: { action_type: "go_to_url", parameters: {...} }
-   * To: { go_to_url: {...} }
-   *
-   * NO MAPPING - parameters should already have exact field names from schema
-   */
-  private convertSimplifiedResponse(parsed: any): any {
-    if (!parsed.action || !Array.isArray(parsed.action)) {
-      return parsed;
-    }
-
-    // Convert each action from simplified format
-    parsed.action = parsed.action.map((act: any) => {
-      if (act.action_type && act.parameters !== undefined) {
-        // Direct conversion - parameters should already be correct
-        // Convert: { action_type: "go_to_url", parameters: {url: "..."} }
-        // To: { go_to_url: {url: "..."} }
-        return { [act.action_type]: act.parameters };
-      }
-      return act;
-    });
-
-    return parsed;
-  }
-
-  async invoke(inputMessages: BaseMessage[]): Promise<this['ModelOutput']> {
-    // Use structured output
-    if (this.withStructuredOutput) {
-      // For Gemini Nano, use simplified schema
-      let schema = this.jsonSchema;
-      const isGeminiNano = (this.chatLLM as any).modelName === 'gemini-nano';
-      if (isGeminiNano) {
-        schema = this.createSimplifiedSchema();
-      }
-
-      const structuredLlm = this.chatLLM.withStructuredOutput(schema, {
-        includeRaw: true,
-        name: this.modelOutputToolName,
-      });
-
-      let response = undefined;
-      try {
-        response = await structuredLlm.invoke(inputMessages, {
-          signal: this.context.controller.signal,
-          ...this.callOptions,
-        });
-
-        if (response.parsed) {
-          // For Gemini Nano, convert simplified format back to expected format
-          if (isGeminiNano) {
-            return this.convertSimplifiedResponse(response.parsed);
-          }
-          return response.parsed;
-        }
-      } catch (error) {
-        if (isAbortedError(error)) {
-          throw error;
-        }
-        const errorMessage = `Failed to invoke ${this.modelName} with structured output: \n${error instanceof Error ? error.message : String(error)}`;
-        throw new Error(errorMessage);
-      }
-
-      // Use type assertion to access the properties
-      const rawResponse = response.raw as BaseMessage & {
-        tool_calls?: Array<{
-          args: {
-            currentState: typeof agentBrainSchema._type;
-            action: z.infer<ReturnType<typeof buildDynamicActionSchema>>;
-          };
-        }>;
-      };
-
-      // sometimes LLM returns an empty content, but with one or more tool calls, so we need to check the tool calls
-      if (rawResponse.tool_calls && rawResponse.tool_calls.length > 0) {
-        logger.info('Navigator structuredLlm tool call with empty content', rawResponse.tool_calls);
-        // only use the first tool call
-        const toolCall = rawResponse.tool_calls[0];
-        return {
-          current_state: toolCall.args.currentState,
-          action: [...toolCall.args.action],
-        };
-      }
-      throw new ResponseParseError('Could not parse navigator response');
-    }
-
-    // Fallback to parent class manual JSON extraction for models without structured output support
-    return super.invoke(inputMessages);
-  }
+  // NavigatorAgent now uses the BaseAgent's invoke method which handles HybridAIClient
+  // The custom invoke logic has been removed as HybridAIClient handles both Nano and cloud inference
 
   async execute(): Promise<AgentOutput<NavigatorResult>> {
     const agentOutput: AgentOutput<NavigatorResult> = {
@@ -444,39 +266,71 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
    */
   private fixActions(response: this['ModelOutput']): Record<string, unknown>[] {
     let actions: Record<string, unknown>[] = [];
+
+    logger.debug('[NavigatorAgent] fixActions input:', JSON.stringify(response.action, null, 2).substring(0, 500));
+
     if (Array.isArray(response.action)) {
-      // if the item is null, skip it
-      actions = response.action.filter((item: unknown) => item !== null);
+      // Filter out null and undefined items
+      actions = response.action.filter((item: unknown) => item !== null && item !== undefined);
+
+      // Validate each action has at least one property
+      actions = actions.filter((item: unknown) => {
+        if (typeof item !== 'object' || item === null) {
+          logger.warning('[NavigatorAgent] Skipping non-object action:', item);
+          return false;
+        }
+        const keys = Object.keys(item);
+        if (keys.length === 0) {
+          logger.warning('[NavigatorAgent] Skipping empty action object');
+          return false;
+        }
+        // Check if action name is undefined
+        const actionName = keys[0];
+        if (actionName === 'undefined' || actionName === undefined) {
+          logger.error('[NavigatorAgent] Action has undefined name:', item);
+          return false;
+        }
+        return true;
+      });
+
       if (actions.length === 0) {
-        logger.warning('No valid actions found', response.action);
+        logger.warning('[NavigatorAgent] No valid actions found after filtering', response.action);
       }
     } else if (typeof response.action === 'string') {
       try {
-        logger.warning('Unexpected action format', response.action);
+        logger.warning('[NavigatorAgent] Unexpected action format (string)', response.action);
         // First try to parse the action string directly
-        actions = JSON.parse(response.action);
+        const parsed = JSON.parse(response.action);
+        actions = Array.isArray(parsed) ? parsed : [parsed];
       } catch (parseError) {
         try {
           // If direct parsing fails, try to fix the JSON first
           const fixedAction = repairJsonString(response.action);
-          logger.info('Fixed action string', fixedAction);
-          actions = JSON.parse(fixedAction);
+          logger.info('[NavigatorAgent] Fixed action string', fixedAction);
+          const parsed = JSON.parse(fixedAction);
+          actions = Array.isArray(parsed) ? parsed : [parsed];
         } catch (error) {
-          logger.error('Invalid action format even after repair attempt', response.action);
+          logger.error('[NavigatorAgent] Invalid action format even after repair attempt', response.action);
           throw new Error('Invalid action output format');
         }
       }
-    } else {
+    } else if (response.action && typeof response.action === 'object') {
       // if the action is neither an array nor a string, it should be an object
+      logger.info('[NavigatorAgent] Action is single object, converting to array');
       actions = [response.action];
+    } else {
+      logger.error('[NavigatorAgent] Invalid action type:', typeof response.action, response.action);
+      throw new Error('Invalid action output format: action must be an array or object');
     }
+
+    logger.debug('[NavigatorAgent] fixActions output:', JSON.stringify(actions, null, 2).substring(0, 500));
     return actions;
   }
 
   private async doMultiAction(actions: Record<string, unknown>[]): Promise<ActionResult[]> {
     const results: ActionResult[] = [];
     let errCount = 0;
-    logger.info('Actions', actions);
+    logger.info('[NavigatorAgent] Executing actions:', JSON.stringify(actions, null, 2).substring(0, 1000));
 
     const browserContext = this.context.browserContext;
     const browserState = await browserContext.getState(this.context.options.useVision);
@@ -486,8 +340,54 @@ export class NavigatorAgent extends BaseAgent<z.ZodType, NavigatorResult> {
 
     for (let i = 0; i < actions.length; i++) {
       const action = actions[i];
-      const actionName = Object.keys(action)[0];
+
+      // Validate action structure
+      if (!action || typeof action !== 'object') {
+        logger.error('[NavigatorAgent] Invalid action at index', i, action);
+        errCount++;
+        results.push(
+          new ActionResult({
+            error: `Invalid action structure at index ${i}`,
+            isDone: false,
+            includeInMemory: true,
+          }),
+        );
+        continue;
+      }
+
+      const actionKeys = Object.keys(action);
+      if (actionKeys.length === 0) {
+        logger.error('[NavigatorAgent] Empty action object at index', i);
+        errCount++;
+        results.push(
+          new ActionResult({
+            error: `Empty action object at index ${i}`,
+            isDone: false,
+            includeInMemory: true,
+          }),
+        );
+        continue;
+      }
+
+      const actionName = actionKeys[0];
       const actionArgs = action[actionName];
+
+      // Check for undefined or invalid action name
+      if (!actionName || actionName === 'undefined') {
+        logger.error('[NavigatorAgent] Undefined action name at index', i, action);
+        errCount++;
+        results.push(
+          new ActionResult({
+            error: `Action name is undefined at index ${i}`,
+            isDone: false,
+            includeInMemory: true,
+          }),
+        );
+        continue;
+      }
+
+      logger.debug(`[NavigatorAgent] Executing action ${i + 1}/${actions.length}: ${actionName}`, actionArgs);
+
       try {
         // check if the task is paused or stopped
         if (this.context.paused || this.context.stopped) {

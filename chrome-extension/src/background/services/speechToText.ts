@@ -1,4 +1,6 @@
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+// TODO: This service needs to be updated to use Firebase AI Logic SDK or HybridAIClient
+// Currently disabled as @langchain/google-genai was removed during migration
+// @ts-nocheck
 import { HumanMessage } from '@langchain/core/messages';
 import { createLogger } from '../log';
 import { type ProviderConfig, speechToTextModelStore } from '@extension/storage';
@@ -7,9 +9,9 @@ import { t } from '@extension/i18n';
 const logger = createLogger('SpeechToText');
 
 export class SpeechToTextService {
-  private llm: ChatGoogleGenerativeAI;
+  private llm: any; // ChatGoogleGenerativeAI - temporarily disabled
 
-  private constructor(llm: ChatGoogleGenerativeAI) {
+  private constructor(llm: any) {
     this.llm = llm;
   }
 
@@ -28,12 +30,9 @@ export class SpeechToTextService {
         throw new Error(t('chat_stt_model_notFound'));
       }
 
-      const llm = new ChatGoogleGenerativeAI({
-        model: config.modelName,
-        apiKey: provider.apiKey,
-        temperature: 0.1,
-        topP: 0.8,
-      });
+      // TODO: Replace with Firebase AI Logic SDK or HybridAIClient
+      const llm = null; // Temporarily disabled
+      throw new Error('Speech-to-text service is temporarily disabled during migration');
       logger.info(`Speech-to-text service created with model: ${config.modelName}`);
       return new SpeechToTextService(llm);
     } catch (error) {

@@ -11,24 +11,24 @@
 
 </div>
 
-## 🌐 Nanobrowser
+## 🌐 Shannon
 
-Nanobrowser es una herramienta de automatización web con IA que se ejecuta en tu navegador. Es una alternativa gratuita a OpenAI Operator, con opciones flexibles de modelos de lenguaje (LLM) y un sistema multiagente.
+Shannon es una herramienta de automatización web con IA impulsada por Gemini Nano y Firebase AI. Nombrada en honor a Claude Shannon, el padre de la teoría de la información, trae automatización web inteligente directamente a tu navegador con IA en el dispositivo y respaldo en la nube sin interrupciones.
 
-⬇️ Descarga [Nanobrowser desde Chrome Web Store](https://chromewebstore.google.com/detail/nanobrowser/imbddededgmcgfhfpcjmijokokekbkal) gratis
+⬇️ Descarga Shannon desde Chrome Web Store (próximamente)
 
 👏 Únete a la comunidad en [Discord](https://discord.gg/NN3ABHggMK) | [X](https://x.com/nanobrowser_ai)
 
-❤️ ¿Te encanta Nanobrowser? ¡Danos una estrella 🌟 y ayúdanos a correr la voz!
+❤️ ¿Te encanta Shannon? ¡Danos una estrella 🌟 y ayúdanos a correr la voz!
 
 <div align="center">
-<img src="https://github.com/user-attachments/assets/112c4385-7b03-4b81-a352-4f348093351b" width="600" alt="Nanobrowser Demo GIF" />
-<p><em>El sistema multiagente de Nanobrowser analizando HuggingFace en tiempo real, con el Planner autocorrigiéndose de forma inteligente al enfrentar obstáculos e instruyendo dinámicamente al Navigator para ajustar su enfoque, todo ejecutándose localmente en tu navegador.</em></p>
+<img src="https://github.com/user-attachments/assets/112c4385-7b03-4b81-a352-4f348093351b" width="600" alt="Shannon Demo GIF" />
+<p><em>El sistema multiagente de Shannon analizando HuggingFace en tiempo real, con el Planner autocorrigiéndose de forma inteligente al enfrentar obstáculos e instruyendo dinámicamente al Navigator para ajustar su enfoque, todo ejecutándose localmente en tu navegador con Gemini Nano.</em></p>
 </div>
 
-## 🔥 ¿Por qué usar Nanobrowser?
+## 🔥 ¿Por qué usar Shannon?
 
-¿Buscas un potente agente de navegador con IA sin el precio de $200/mes de OpenAI Operator? **Nanobrowser**, como extensión de Chrome, ofrece capacidades avanzadas de automatización web mientras tú tienes el control total.
+¿Buscas un potente agente de navegador con IA sin el precio de $200/mes de OpenAI Operator? **Shannon**, como extensión de Chrome, ofrece capacidades avanzadas de automatización web con IA de vanguardia en el dispositivo mientras tú tienes el control total.
 
 - **100% Gratis** - Sin suscripciones ni costos ocultos. Solo instala y usa tus propias claves de API, pagando únicamente por lo que tú consumas.
 - **Enfoque En Privacidad** - Todo se ejecuta en tu navegador local. Tus credenciales permanecen contigo y nunca se comparten con ningún servicio en la nube.

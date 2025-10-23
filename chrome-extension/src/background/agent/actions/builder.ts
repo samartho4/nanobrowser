@@ -26,7 +26,7 @@ import {
 import { z } from 'zod';
 import { createLogger } from '@src/background/log';
 import { ExecutionState, Actors } from '../event/types';
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type { HybridAIClient } from '@src/background/llm/HybridAIClient';
 import { wrapUntrustedContent } from '../messages/utils';
 
 const logger = createLogger('Action');
@@ -142,11 +142,11 @@ export function buildDynamicActionSchema(actions: Action[]): z.ZodType {
 
 export class ActionBuilder {
   private readonly context: AgentContext;
-  private readonly extractorLLM: BaseChatModel;
+  private readonly aiClient: HybridAIClient;
 
-  constructor(context: AgentContext, extractorLLM: BaseChatModel) {
+  constructor(context: AgentContext, aiClient: HybridAIClient) {
     this.context = context;
-    this.extractorLLM = extractorLLM;
+    this.aiClient = aiClient;
   }
 
   buildDefaultActions() {
@@ -338,13 +338,10 @@ export class ActionBuilder {
     //   this.context.emitEvent(Actors.NAVIGATOR, ExecutionState.ACT_START, intent);
     //   const page = await this.context.browserContext.getCurrentPage();
     //   const content = await page.getReadabilityContent();
-    //   const promptTemplate = PromptTemplate.fromTemplate(
-    //     'Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: {goal}, Page: {page}',
-    //   );
-    //   const prompt = await promptTemplate.invoke({ goal, page: content.content });
+    //   const promptText = `Your task is to extract the content of the page. You will be given a page and a goal and you should extract all relevant information around this goal from the page. If the goal is vague, summarize the page. Respond in json format. Extraction goal: ${goal}, Page: ${content.content}`;
 
     //   try {
-    //     const output = await this.extractorLLM.invoke(prompt);
+    //     const output = await this.aiClient.invoke({ prompt: promptText });
     //     const msg = `📄  Extracted from page\n: ${output.content}\n`;
     //     return new ActionResult({
     //       extractedContent: msg,

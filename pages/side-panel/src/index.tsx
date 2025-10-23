@@ -1,6 +1,8 @@
 import { createRoot } from 'react-dom/client';
 import '@src/index.css';
 import SidePanel from '@src/SidePanel';
+// Initialize Firebase bridge for cloud fallback
+import '@src/firebaseBridge';
 
 function init() {
   const appContainer = document.querySelector('#app-container');

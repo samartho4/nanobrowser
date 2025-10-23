@@ -19,6 +19,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
+    "firebase": "^12.4.0",
     "react-icons": "^5.0.0",
     "webextension-polyfill": "^0.12.0",
     "@extension/shared": "workspace:*",

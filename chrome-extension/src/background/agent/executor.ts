@@ -1,4 +1,3 @@
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { type ActionResult, AgentContext, type AgentOptions, type AgentOutput } from './types';
 import { t } from '@extension/i18n';
 import { NavigatorAgent, NavigatorActionRegistry } from './agents/navigator';
@@ -25,12 +24,11 @@ import { chatHistoryStore } from '@extension/storage/lib/chat';
 import type { AgentStepHistory } from './history';
 import type { GeneralSettingsConfig } from '@extension/storage';
 import { analytics } from '../services/analytics';
+import type { HybridAIClient } from '../llm/HybridAIClient';
 
 const logger = createLogger('Executor');
 
 export interface ExecutorExtraArgs {
-  plannerLLM?: BaseChatModel;
-  extractorLLM?: BaseChatModel;
   agentOptions?: Partial<AgentOptions>;
   generalSettings?: GeneralSettingsConfig;
 }
@@ -47,13 +45,11 @@ export class Executor {
     task: string,
     taskId: string,
     browserContext: BrowserContext,
-    navigatorLLM: BaseChatModel,
+    aiClient: HybridAIClient,
     extraArgs?: Partial<ExecutorExtraArgs>,
   ) {
     const messageManager = new MessageManager();
 
-    const plannerLLM = extraArgs?.plannerLLM ?? navigatorLLM;
-    const extractorLLM = extraArgs?.extractorLLM ?? navigatorLLM;
     const eventManager = new EventManager();
     const context = new AgentContext(
       taskId,
@@ -68,18 +64,18 @@ export class Executor {
     this.navigatorPrompt = new NavigatorPrompt(context.options.maxActionsPerStep);
     this.plannerPrompt = new PlannerPrompt();
 
-    const actionBuilder = new ActionBuilder(context, extractorLLM);
+    const actionBuilder = new ActionBuilder(context, aiClient);
     const navigatorActionRegistry = new NavigatorActionRegistry(actionBuilder.buildDefaultActions());
 
     // Initialize agents with their respective prompts
     this.navigator = new NavigatorAgent(navigatorActionRegistry, {
-      chatLLM: navigatorLLM,
+      aiClient: aiClient,
       context: context,
       prompt: this.navigatorPrompt,
     });
 
     this.planner = new PlannerAgent({
-      chatLLM: plannerLLM,
+      aiClient: aiClient,
       context: context,
       prompt: this.plannerPrompt,
     });

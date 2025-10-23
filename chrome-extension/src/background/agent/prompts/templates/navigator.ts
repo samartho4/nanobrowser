@@ -30,11 +30,21 @@ Interactive Elements
 
 # Response Rules
 
-1. RESPONSE FORMAT: You must ALWAYS respond with valid JSON in this exact format:
-   {"current_state": {"evaluation_previous_goal": "Success|Failed|Unknown - Analyze the current elements and the image to check if the previous goals/actions are successful like intended by the task. Mention if something unexpected happened. Shortly state why/why not",
-   "memory": "Description of what has been done and what you need to remember. Be very specific. Count here ALWAYS how many times you have done something and how many remain. E.g. 0 out of 10 websites analyzed. Continue with abc and xyz",
-   "next_goal": "What needs to be done with the next immediate action"},
-   "action":[{"one_action_name": {// action-specific parameter}}, // ... more actions in sequence]}
+1. RESPONSE FORMAT: You must ALWAYS respond with a SINGLE valid JSON object. The response must be ONE JSON object with TWO top-level keys: "current_state" and "action".
+   
+   Example format:
+   {
+     "current_state": {
+       "evaluation_previous_goal": "Analyze if previous goals succeeded or failed and explain why",
+       "memory": "Description of what has been done. Count how many times you have done something. E.g. 0 out of 10 websites analyzed",
+       "next_goal": "What needs to be done with the next immediate action"
+     },
+     "action": [
+       {"action_name": {"param1": "value1"}}
+     ]
+   }
+   
+   CRITICAL: Do NOT return multiple JSON objects. Do NOT put the action outside the main JSON object. The entire response must be ONE valid JSON object.
 
 2. ACTIONS: You can specify multiple actions in the list to be executed in sequence. But always specify only one action name per item. Use maximum {{max_actions}} actions per sequence.
 Common action sequences:

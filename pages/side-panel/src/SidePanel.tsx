@@ -11,6 +11,7 @@ import MessageList from './components/MessageList';
 import ChatInput from './components/ChatInput';
 import ChatHistoryList from './components/ChatHistoryList';
 import BookmarkList from './components/BookmarkList';
+import StatusChip from './components/StatusChip';
 import { EventType, type AgentEvent, ExecutionState } from './types/event';
 import './SidePanel.css';
 
@@ -1017,6 +1018,7 @@ const SidePanel = () => {
               <img src="/icon-128.png" alt="Extension Logo" className="size-6" />
             )}
           </div>
+          {!showHistory && <StatusChip />}
           <div className="header-icons">
             {!showHistory && (
               <>
