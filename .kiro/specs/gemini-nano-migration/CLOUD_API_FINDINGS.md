@@ -34,32 +34,121 @@ The simplification code in `firebaseBridge.ts` reduces properties from 20+ to 8,
 2. Each property can have nested schemas
 3. The action schema has 20+ different action types as optional properties
 
-## The Real Solution
+## The Real Solution: HYBRID APPROACH ✅
 
-**Stop using structured output for complex schemas.** Instead:
+**Use BOTH structured output AND plain text, automatically choosing the best method based on schema complexity.**
 
-### Approach 1: Plain Text with JSON Instructions
-- Remove `responseMimeType` and `responseSchema`
-- Add instruction in prompt: "Return valid JSON matching this schema: ..."
-- Parse response as JSON manually
-- This is how LangChain's ChatGoogleGenerativeAI worked before
+This approach:
+- ✅ Uses structured output for simple schemas (FAST, reliable)
+- ✅ Uses plain text for complex schemas (RELIABLE, no truncation)
+- ✅ Auto-learns which schemas work best with which method
+- ✅ Gracefully falls back if structured output fails
+- ✅ Future-proof for episodic memory layer (90% fast queries, 10% complex reasoning)
 
-### Approach 2: Simplify Schema Further
-- Reduce to 3-4 properties max
-- Remove all optional properties
-- Use simpler types (string instead of complex objects)
+### How It Works
 
-### Approach 3: Use Cloud API Directly (Not Firebase SDK)
-- Call Gemini API directly via REST
-- More control over parameters
-- Can use `response_mime_type` without Firebase's limitations
+```typescript
+async generateStructured(messages, schema) {
+  const complexity = calculateComplexity(schema);
+  
+  if (complexity <= THRESHOLD) {
+    try {
+      // Try structured output (fast)
+      return await generateWithStructuredOutput(messages, schema);
+    } catch (error) {
+      // Fallback to plain text
+      return await generateWithPlainText(messages, schema);
+    }
+  } else {
+    // Complex schema: use plain text directly
+    return await generateWithPlainText(messages, schema);
+  }
+}
+```
+
+### Method 1: Structured Output (Simple Schemas)
+Following the Prompt API pattern from Chrome 137:
+```typescript
+const firebaseSchema = convertToFirebaseSchema(jsonSchema);
+
+const model = getGenerativeModel(ai, {
+  model: 'gemini-1.5-flash',
+  generationConfig: {
+    responseMimeType: 'application/json',
+    responseSchema: firebaseSchema,
+  },
+});
+
+const response = await model.generateContent(parts);
+return JSON.parse(response.text());
+```
+
+**When to use:**
+- Schema has ≤5 top-level properties
+- Total complexity score ≤5
+- Examples: memory queries, simple actions (wait, done)
+
+### Method 2: Plain Text with JSON Instructions (Complex Schemas)
+```typescript
+const model = getGenerativeModel(ai, {
+  model: 'gemini-1.5-flash',
+  // No generationConfig
+});
+
+// Add JSON Schema instructions to prompt
+const jsonInstruction = `
+CRITICAL: You MUST respond with ONLY valid JSON.
+
+Required JSON Schema:
+${JSON.stringify(jsonSchema, null, 2)}
+
+Rules:
+1. Must be parseable by JSON.parse()
+2. Must match the schema exactly
+3. No text before or after JSON
+4. No markdown code blocks
+`;
+
+const enhancedPrompt = prompt + jsonInstruction;
+const response = await model.generateContent(enhancedPrompt);
+
+// Extract and parse JSON
+const text = cleanJsonResponse(response.text());
+return JSON.parse(text);
+```
+
+**When to use:**
+- Schema has >5 top-level properties
+- Navigator schema (20+ action properties)
+- Complex nested structures
+- Total complexity score >5
+
+### Auto-Learning Cache
+
+The system remembers which schemas work with structured output:
+
+```typescript
+// First attempt: try structured, learn result
+try {
+  result = await generateWithStructuredOutput(messages, schema);
+  cache.set(schemaHash, 'structured'); // ✅ Works!
+} catch (error) {
+  result = await generateWithPlainText(messages, schema);
+  cache.set(schemaHash, 'plaintext'); // Remember for next time
+}
+
+// Future attempts: use cached knowledge
+const preferredMethod = cache.get(schemaHash);
+```
 
 ## Recommended Next Steps
 
-1. **Remove structured output from Firebase bridge** for complex schemas
-2. **Use plain text generation** with JSON instructions in prompt
-3. **Keep Nano's schema simplification** (it's still needed)
-4. **Test with simplified approach**
+1. **Implement complexity calculator** - Count properties, nesting depth
+2. **Add both generation methods** - Structured output + Plain text
+3. **Add auto-learning cache** - Remember which schemas work with which method
+4. **Add graceful fallback** - If structured fails, retry with plain text
+5. **Keep Nano's schema handling** - It already works well
+6. **Test with Navigator schema** - Verify complex schemas work
 
 ## Code Changes Needed
 

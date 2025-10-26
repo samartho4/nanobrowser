@@ -12,6 +12,8 @@ import ChatInput from './components/ChatInput';
 import ChatHistoryList from './components/ChatHistoryList';
 import BookmarkList from './components/BookmarkList';
 import StatusChip from './components/StatusChip';
+// import { PageCaptureTest } from './components/PageCaptureTest'; // COMMENTED OUT
+import { MultimodalTestComponent } from './components/MultimodalTest';
 import { EventType, type AgentEvent, ExecutionState } from './types/event';
 import './SidePanel.css';
 
@@ -29,6 +31,7 @@ const SidePanel = () => {
   const [showStopButton, setShowStopButton] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showMultimodalTest, setShowMultimodalTest] = useState(false);
   const [chatSessions, setChatSessions] = useState<Array<{ id: string; title: string; createdAt: number }>>([]);
   const [isFollowUpMode, setIsFollowUpMode] = useState(false);
   const [isHistoricalSession, setIsHistoricalSession] = useState(false);
@@ -1040,6 +1043,16 @@ const SidePanel = () => {
                   tabIndex={0}>
                   <GrHistory size={20} />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMultimodalTest(!showMultimodalTest)}
+                  onKeyDown={e => e.key === 'Enter' && setShowMultimodalTest(!showMultimodalTest)}
+                  className={`header-icon ${showMultimodalTest ? (isDarkMode ? 'text-purple-400' : 'text-purple-600') : isDarkMode ? 'text-sky-400 hover:text-sky-300' : 'text-sky-400 hover:text-sky-500'} cursor-pointer`}
+                  aria-label="Multimodal Testing"
+                  title="Multimodal Testing"
+                  tabIndex={0}>
+                  🧪
+                </button>
               </>
             )}
             <a
@@ -1060,7 +1073,11 @@ const SidePanel = () => {
             </button>
           </div>
         </header>
-        {showHistory ? (
+        {showMultimodalTest ? (
+          <div className="flex-1 overflow-hidden">
+            <MultimodalTestComponent />
+          </div>
+        ) : showHistory ? (
           <div className="flex-1 overflow-hidden">
             <ChatHistoryList
               sessions={chatSessions}
@@ -1146,6 +1163,14 @@ const SidePanel = () => {
                       />
                     </div>
                     <div className="flex-1 overflow-y-auto">
+                      {/* Page Capture Component - COMMENTED OUT */}
+                      {/* <PageCaptureTest 
+                        onPromptUpdate={(prompt) => {
+                          if (setInputTextRef.current) {
+                            setInputTextRef.current(prompt);
+                          }
+                        }} 
+                      /> */}
                       <BookmarkList
                         bookmarks={favoritePrompts}
                         onBookmarkSelect={handleBookmarkSelect}

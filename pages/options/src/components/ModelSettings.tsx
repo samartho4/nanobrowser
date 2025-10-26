@@ -1673,6 +1673,19 @@ export const ModelSettings = ({ isDarkMode = false }: ModelSettingsProps) => {
           </div>
         </div>
       </div>
+
+      {/* Context Window Section */}
+      <section
+        className={`space-y-4 rounded-lg border p-6 ${
+          isDarkMode ? 'border-slate-700 bg-slate-800/30 shadow-lg' : 'border-blue-200 bg-white/40 shadow-md'
+        }`}>
+        <div>
+          <h2 className={`text-lg font-semibold ${isDarkMode ? 'text-gray-100' : 'text-gray-900'}`}>Context Window</h2>
+          <p className={`mt-2 text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+            Manage context window settings for models. Coming soon...
+          </p>
+        </div>
+      </section>
     </section>
   );
 };

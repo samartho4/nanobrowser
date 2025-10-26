@@ -1,0 +1,1198 @@
+/**
+ * MultimodalTest Component
+ * Provides a UI for testing image and audio multimodal features
+ * Tests: validation, Base64 conversion, background communication, HybridAIClient integration
+ */
+
+import { useState } from 'react';
+import type { ReactNode } from 'react';
+import { PageCaptureTest } from './PageCaptureTest';
+
+interface TestResult {
+  status: 'idle' | 'loading' | 'success' | 'error';
+  message: string;
+  data?: Record<string, unknown>;
+  timestamp?: string;
+}
+
+interface FileInfo {
+  name: string;
+  type: string;
+  size: number;
+}
+
+export function MultimodalTestComponent() {
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [prompt, setPrompt] = useState('Describe what you see in this image');
+  const [testResult, setTestResult] = useState<TestResult>({ status: 'idle', message: 'Ready to test' });
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [testHistory, setTestHistory] = useState<TestResult[]>([]);
+
+  // Voice recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [recordingDuration, setRecordingDuration] = useState(0);
+  const [recordingTimer, setRecordingTimer] = useState<number | null>(null);
+
+  // Speech recognition state
+  const [isListening, setIsListening] = useState(false);
+  const [recognition, setRecognition] = useState<any>(null);
+  const [interimTranscript, setInterimTranscript] = useState('');
+  const [speechSupported, setSpeechSupported] = useState(true);
+
+  // Helper: Add result to history
+  const addToHistory = (result: TestResult) => {
+    const timestampedResult = { ...result, timestamp: new Date().toLocaleTimeString() };
+    setTestHistory(prev => [timestampedResult, ...prev.slice(0, 9)]); // Keep last 10
+  };
+
+  // Helper: Log file info
+  const formatFileInfo = (file: File): FileInfo => ({
+    name: file.name,
+    type: file.type,
+    size: file.size,
+  });
+
+  // TEST 1: Validate file (MIME type & size)
+  const testFileValidation = async (file: File, fileType: 'image' | 'audio') => {
+    setIsProcessing(true);
+    const startTime = performance.now();
+
+    try {
+      setTestResult({ status: 'loading', message: `[1/5] Validating ${fileType}...` });
+
+      // MIME type validation
+      const validImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+      const validAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp3', 'audio/webm'];
+      const maxImageSize = 5 * 1024 * 1024; // 5 MB
+      const maxAudioSize = 10 * 1024 * 1024; // 10 MB
+
+      const isValidType =
+        fileType === 'image' ? validImageTypes.includes(file.type) : validAudioTypes.includes(file.type);
+
+      if (!isValidType) {
+        throw new Error(
+          `Invalid ${fileType} MIME type: ${file.type}. Supported: ${fileType === 'image' ? validImageTypes.join(', ') : validAudioTypes.join(', ')}`,
+        );
+      }
+
+      // Size validation
+      const maxSize = fileType === 'image' ? maxImageSize : maxAudioSize;
+      if (file.size > maxSize) {
+        throw new Error(
+          `File too large: ${(file.size / 1024 / 1024).toFixed(2)} MB. Max: ${fileType === 'image' ? '5' : '10'} MB`,
+        );
+      }
+
+      const duration = (performance.now() - startTime).toFixed(2);
+      const result: TestResult = {
+        status: 'success',
+        message: `✅ ${fileType} validated successfully in ${duration}ms`,
+        data: {
+          fileName: file.name,
+          mimeType: file.type,
+          sizeKB: (file.size / 1024).toFixed(2),
+          sizeMB: (file.size / 1024 / 1024).toFixed(2),
+          validation: {
+            mimeTypeValid: isValidType,
+            sizeValid: file.size <= maxSize,
+            maxAllowed: fileType === 'image' ? '5 MB' : '10 MB',
+          },
+        },
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } catch (error) {
+      const result: TestResult = {
+        status: 'error',
+        message: `❌ Validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        data: {
+          fileName: file.name,
+          fileType,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // TEST 2: Convert file to Base64 (FileReader API)
+  const testBase64Conversion = async (file: File) => {
+    setIsProcessing(true);
+    const startTime = performance.now();
+
+    return new Promise<void>(resolve => {
+      setTestResult({ status: 'loading', message: '[2/5] Converting to Base64...' });
+
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        try {
+          if (typeof reader.result !== 'string') {
+            throw new Error('FileReader did not return string');
+          }
+
+          const base64Data = reader.result.split(',')[1];
+          if (!base64Data) {
+            throw new Error('Could not extract Base64 data from data URL');
+          }
+
+          const duration = (performance.now() - startTime).toFixed(2);
+          const result: TestResult = {
+            status: 'success',
+            message: `✅ Base64 conversion successful in ${duration}ms`,
+            data: {
+              originalSize: file.size,
+              originalSizeMB: (file.size / 1024 / 1024).toFixed(2),
+              base64Length: base64Data.length,
+              compressionRatio: ((base64Data.length / (file.size * 1.33)) * 100).toFixed(2),
+              preview: base64Data.substring(0, 60) + '...',
+              fileType: file.type,
+            },
+          };
+
+          setTestResult(result);
+          addToHistory(result);
+        } catch (error) {
+          const result: TestResult = {
+            status: 'error',
+            message: `❌ Base64 conversion failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          };
+
+          setTestResult(result);
+          addToHistory(result);
+        } finally {
+          setIsProcessing(false);
+          resolve();
+        }
+      };
+
+      reader.onerror = () => {
+        const result: TestResult = {
+          status: 'error',
+          message: '❌ FileReader error: Could not read file',
+          data: { error: reader.error?.message || 'Unknown FileReader error' },
+        };
+
+        setTestResult(result);
+        addToHistory(result);
+        setIsProcessing(false);
+        resolve();
+      };
+
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // TEST 3: Test Multimodal Pipeline (validation + part creation)
+  const testMultimodalPipeline = async (file: File, fileType: 'image' | 'audio') => {
+    setIsProcessing(true);
+    const startTime = performance.now();
+
+    try {
+      setTestResult({ status: 'loading', message: '[3/5] Testing multimodal pipeline...' });
+
+      // Step 1: Read file
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64Data = result.split(',')[1];
+          if (!base64Data) reject(new Error('Failed to extract Base64'));
+          resolve(base64Data);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+
+      // Step 2: Validate MIME type
+      const validImageTypes = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+      const validAudioTypes = ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp3', 'audio/webm'];
+      const isValidType =
+        fileType === 'image' ? validImageTypes.includes(file.type) : validAudioTypes.includes(file.type);
+
+      if (!isValidType) {
+        throw new Error(`Invalid MIME type: ${file.type}`);
+      }
+
+      // Step 3: Create InlineDataPart (same as Firebase format)
+      const generativePart = {
+        inlineData: {
+          data: base64,
+          mimeType: file.type,
+        },
+      };
+
+      // Step 4: Build multimodal content
+      const multimodalContent = [{ text: prompt }, generativePart];
+
+      const duration = (performance.now() - startTime).toFixed(2);
+      const result: TestResult = {
+        status: 'success',
+        message: `✅ Multimodal pipeline successful in ${duration}ms`,
+        data: {
+          steps: [
+            '✓ File read',
+            '✓ MIME validated',
+            '✓ Base64 encoded',
+            '✓ InlineDataPart created',
+            '✓ Multimodal content built',
+          ],
+          contentStructure: {
+            parts: multimodalContent.length,
+            partTypes: multimodalContent.map((p, i) => (typeof p === 'string' ? `text[${i}]` : `inlineData[${i}]`)),
+          },
+          generativePart: {
+            inlineData: {
+              mimeType: generativePart.inlineData.mimeType,
+              dataLength: generativePart.inlineData.data.length,
+              preview: generativePart.inlineData.data.substring(0, 50) + '...',
+            },
+          },
+        },
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } catch (error) {
+      const result: TestResult = {
+        status: 'error',
+        message: `❌ Pipeline test failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // TEST 4: Send to Background (Chrome messaging)
+  const testBackgroundCommunication = async (file: File, fileType: 'image' | 'audio') => {
+    setIsProcessing(true);
+    const startTime = performance.now();
+
+    try {
+      setTestResult({ status: 'loading', message: '[4/5] Sending to background script...' });
+
+      // Read file
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64Data = result.split(',')[1];
+          if (!base64Data) reject(new Error('Failed to extract Base64'));
+          resolve(base64Data);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(file);
+      });
+
+      // Send message to background
+      const response = await new Promise<unknown>((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          {
+            type: 'TEST_MULTIMODAL',
+            payload: {
+              fileType,
+              mimeType: file.type,
+              base64,
+              prompt,
+              fileName: file.name,
+            },
+          },
+          (response: unknown) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          },
+        );
+      });
+
+      const duration = (performance.now() - startTime).toFixed(2);
+      const result: TestResult = {
+        status: 'success',
+        message: `✅ Background communication successful in ${duration}ms`,
+        data: {
+          messageType: 'TEST_MULTIMODAL',
+          payload: {
+            fileType,
+            mimeType: file.type,
+            base64Length: base64.length,
+            prompt: prompt.substring(0, 50) + '...',
+          },
+          response,
+          networkLatency: `${duration}ms`,
+        },
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } catch (error) {
+      const result: TestResult = {
+        status: 'error',
+        message: `❌ Background communication failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        data: {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // TEST 5: Full HybridAI Invocation
+  const testHybridAIInvoke = async (file: File, fileType: 'image' | 'audio') => {
+    setIsProcessing(true);
+    const startTime = performance.now();
+
+    try {
+      setTestResult({ status: 'loading', message: '[5/5] Invoking HybridAIClient...' });
+
+      // Compress image if needed (images only)
+      let fileToUse = file;
+      if (fileType === 'image') {
+        try {
+          console.log('[MultimodalTest] Original file size:', (file.size / 1024 / 1024).toFixed(2), 'MB');
+          fileToUse = await compressImageForTransmission(file);
+          console.log('[MultimodalTest] Compressed file size:', (fileToUse.size / 1024 / 1024).toFixed(2), 'MB');
+        } catch (compressError) {
+          throw new Error(
+            `Image compression failed: ${compressError instanceof Error ? compressError.message : 'Unknown error'}`,
+          );
+        }
+      }
+
+      // Read file
+      const base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          const base64Data = result.split(',')[1];
+          if (!base64Data) reject(new Error('Failed to extract Base64'));
+          console.log('[MultimodalTest] Base64 size:', (base64Data.length / 1024 / 1024).toFixed(2), 'MB');
+          resolve(base64Data);
+        };
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(fileToUse);
+      });
+
+      // Send invoke request
+      console.log('[MultimodalTest] Sending message to background...');
+      const messagePayload = {
+        type: 'INVOKE_HYBRID_AI',
+        payload: {
+          fileType,
+          mimeType: fileToUse.type,
+          base64,
+          prompt,
+        },
+      };
+
+      // Check payload size before sending
+      const payloadSize = JSON.stringify(messagePayload).length;
+      console.log('[MultimodalTest] Message payload size:', (payloadSize / 1024 / 1024).toFixed(2), 'MB');
+
+      if (payloadSize > 50 * 1024 * 1024) {
+        throw new Error(
+          `Message too large to send (${(payloadSize / 1024 / 1024).toFixed(2)}MB). Maximum is ~50MB. Try a smaller or more compressed image.`,
+        );
+      }
+
+      const response = await new Promise<unknown>((resolve, reject) => {
+        chrome.runtime.sendMessage(
+          {
+            type: 'INVOKE_HYBRID_AI',
+            payload: {
+              fileType,
+              mimeType: fileToUse.type,
+              base64,
+              prompt,
+            },
+          },
+          (response: unknown) => {
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else {
+              resolve(response);
+            }
+          },
+        );
+      });
+
+      const duration = (performance.now() - startTime).toFixed(2);
+      const durationNum = parseFloat(duration);
+      const result: TestResult = {
+        status: 'success',
+        message: `✅ HybridAIClient invocation successful in ${duration}ms`,
+        data: {
+          invocationTime: `${duration}ms`,
+          processingMode: durationNum > 5000 ? 'CLOUD (Firebase)' : 'LOCAL (Nano)',
+          response,
+        },
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } catch (error) {
+      const result: TestResult = {
+        status: 'error',
+        message: `❌ HybridAIClient invocation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        data: {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      };
+
+      setTestResult(result);
+      addToHistory(result);
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  // Voice Recording Functions
+  const startVoiceRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = e => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+        const audioFile = new File([audioBlob], `recording-${Date.now()}.webm`, { type: 'audio/webm' });
+
+        setAudioFile(audioFile);
+        setPrompt('Transcribe this audio and respond to it');
+
+        // Stop all tracks to release microphone
+        stream.getTracks().forEach(track => track.stop());
+
+        // Clear chunks
+        setAudioChunks([]);
+        setRecordingDuration(0);
+        if (recordingTimer) {
+          clearInterval(recordingTimer);
+          setRecordingTimer(null);
+        }
+
+        setTestResult({
+          status: 'success',
+          message: `🎤 Recording saved: ${(audioFile.size / 1024).toFixed(2)} KB`,
+        });
+      };
+
+      setMediaRecorder(recorder);
+      setAudioChunks(chunks);
+      recorder.start();
+      setIsRecording(true);
+
+      // Start duration timer
+      const timer = setInterval(() => {
+        setRecordingDuration(prev => prev + 1);
+      }, 1000) as unknown as number;
+      setRecordingTimer(timer);
+
+      setTestResult({
+        status: 'success',
+        message: '🎤 Recording started... Click Stop when done',
+      });
+    } catch (error) {
+      setTestResult({
+        status: 'error',
+        message: `❌ Microphone access denied: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
+    }
+  };
+
+  const stopVoiceRecording = () => {
+    if (mediaRecorder && isRecording) {
+      mediaRecorder.stop();
+      setIsRecording(false);
+      setMediaRecorder(null);
+    }
+  };
+
+  // Speech Recognition Functions (Speech-to-Text)
+  const startSpeechRecognition = () => {
+    // Check browser support
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setSpeechSupported(false);
+      setTestResult({
+        status: 'error',
+        message: '❌ Speech recognition not supported in this browser. Please use Chrome.',
+      });
+      return;
+    }
+
+    try {
+      const recognitionInstance = new SpeechRecognition();
+
+      // Configuration
+      recognitionInstance.continuous = false; // Stop after one phrase
+      recognitionInstance.interimResults = true; // Show partial results
+      recognitionInstance.lang = 'en-US';
+      recognitionInstance.maxAlternatives = 1;
+
+      // Event: Started
+      recognitionInstance.onstart = () => {
+        setIsListening(true);
+        setInterimTranscript('');
+        setTestResult({
+          status: 'loading',
+          message: '🎙️ Listening... Speak now!',
+        });
+      };
+
+      // Event: Results
+      recognitionInstance.onresult = (event: any) => {
+        let interim = '';
+        let final = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            final += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+
+        if (interim) {
+          setInterimTranscript(interim);
+        }
+
+        if (final) {
+          setPrompt(final);
+          setInterimTranscript('');
+          setTestResult({
+            status: 'success',
+            message: `✅ Transcribed: "${final}"`,
+          });
+        }
+      };
+
+      // Event: Error
+      recognitionInstance.onerror = (event: any) => {
+        let errorMessage = 'Unknown error';
+
+        switch (event.error) {
+          case 'no-speech':
+            errorMessage = 'No speech detected. Please try again.';
+            break;
+          case 'audio-capture':
+            errorMessage = 'Microphone not accessible.';
+            break;
+          case 'not-allowed':
+            errorMessage = 'Microphone permission denied.';
+            break;
+          case 'network':
+            errorMessage = 'Network error. Check your connection.';
+            break;
+          default:
+            errorMessage = event.error;
+        }
+
+        setTestResult({
+          status: 'error',
+          message: `❌ Speech recognition error: ${errorMessage}`,
+        });
+        setIsListening(false);
+        setInterimTranscript('');
+      };
+
+      // Event: Ended
+      recognitionInstance.onend = () => {
+        setIsListening(false);
+        setInterimTranscript('');
+      };
+
+      setRecognition(recognitionInstance);
+      recognitionInstance.start();
+    } catch (error) {
+      setTestResult({
+        status: 'error',
+        message: `❌ Failed to start speech recognition: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
+      setIsListening(false);
+    }
+  };
+
+  const stopSpeechRecognition = () => {
+    if (recognition && isListening) {
+      recognition.stop();
+      setIsListening(false);
+      setInterimTranscript('');
+    }
+  };
+
+  // Continuous listening mode (keeps listening)
+  const startContinuousListening = () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      setSpeechSupported(false);
+      setTestResult({
+        status: 'error',
+        message: '❌ Speech recognition not supported',
+      });
+      return;
+    }
+
+    try {
+      const recognitionInstance = new SpeechRecognition();
+      recognitionInstance.continuous = true; // Keep listening
+      recognitionInstance.interimResults = true;
+      recognitionInstance.lang = 'en-US';
+
+      recognitionInstance.onstart = () => {
+        setIsListening(true);
+        setTestResult({
+          status: 'success',
+          message: '🎙️ Continuous listening active... Say "stop listening" to end',
+        });
+      };
+
+      recognitionInstance.onresult = (event: any) => {
+        let interim = '';
+        let final = '';
+
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            final += transcript;
+          } else {
+            interim += transcript;
+          }
+        }
+
+        setInterimTranscript(interim);
+
+        if (final) {
+          const currentPrompt = prompt;
+          const newPrompt = currentPrompt ? `${currentPrompt} ${final}` : final;
+          setPrompt(newPrompt);
+
+          // Check for stop command
+          if (final.toLowerCase().includes('stop listening')) {
+            recognitionInstance.stop();
+            setTestResult({
+              status: 'success',
+              message: '✅ Stopped continuous listening',
+            });
+          }
+        }
+      };
+
+      recognitionInstance.onerror = (event: any) => {
+        console.error('Speech recognition error:', event.error);
+      };
+
+      recognitionInstance.onend = () => {
+        setIsListening(false);
+        setInterimTranscript('');
+      };
+
+      setRecognition(recognitionInstance);
+      recognitionInstance.start();
+    } catch (error) {
+      setTestResult({
+        status: 'error',
+        message: `❌ Failed to start continuous listening: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      });
+      setIsListening(false);
+    }
+  };
+
+  // Helper: Compress image for safe transmission
+  const compressImageForTransmission = async (file: File, maxQuality: number = 0.75): Promise<File> => {
+    if (!file.type.startsWith('image/')) {
+      return file; // Not an image, return as-is
+    }
+
+    const MAX_SENDMESSAGE_SIZE = 32 * 1024 * 1024; // 32 MB safe limit
+
+    // Estimate base64 size (33% larger than binary)
+    const estimatedBase64Size = Math.ceil((file.size * 4) / 3);
+
+    if (estimatedBase64Size <= MAX_SENDMESSAGE_SIZE) {
+      return file; // No compression needed
+    }
+
+    console.log(
+      `[MultimodalTest] Image too large (${(estimatedBase64Size / 1024 / 1024).toFixed(2)}MB), compressing...`,
+    );
+
+    return new Promise<File>((resolve, reject) => {
+      const img = new Image();
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        reject(new Error('Failed to get canvas context'));
+        return;
+      }
+
+      img.onload = () => {
+        try {
+          // Scale down if very large (max 2048x2048)
+          let { width, height } = img;
+          const maxDim = 2048;
+
+          if (width > maxDim || height > maxDim) {
+            const ratio = Math.min(maxDim / width, maxDim / height);
+            width = Math.round(width * ratio);
+            height = Math.round(height * ratio);
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          ctx.drawImage(img, 0, 0, width, height);
+
+          // Try to compress with the given quality
+          const attemptCompress = (quality: number, attempt: number = 0): void => {
+            canvas.toBlob(
+              compressedBlob => {
+                if (!compressedBlob) {
+                  reject(new Error('Failed to compress image'));
+                  return;
+                }
+
+                const estimatedCompressedSize = Math.ceil((compressedBlob.size * 4) / 3);
+
+                // If still too large and we have more quality levels to try
+                if (estimatedCompressedSize > MAX_SENDMESSAGE_SIZE && quality > 0.2 && attempt < 5) {
+                  const nextQuality = Math.max(quality - 0.15, 0.2);
+                  console.log(
+                    `[MultimodalTest] Still too large (${(estimatedCompressedSize / 1024 / 1024).toFixed(2)}MB), retrying with quality ${nextQuality}...`,
+                  );
+                  attemptCompress(nextQuality, attempt + 1);
+                  return;
+                }
+
+                if (estimatedCompressedSize > MAX_SENDMESSAGE_SIZE) {
+                  reject(
+                    new Error(
+                      `Image still too large after compression (${(estimatedCompressedSize / 1024 / 1024).toFixed(2)}MB). Try a much smaller image.`,
+                    ),
+                  );
+                  return;
+                }
+
+                console.log(
+                  `[MultimodalTest] Compressed from ${(file.size / 1024 / 1024).toFixed(2)}MB to ${(compressedBlob.size / 1024 / 1024).toFixed(2)}MB (quality: ${quality})`,
+                );
+
+                // Convert blob to File
+                const compressedFile = new File([compressedBlob], file.name, { type: 'image/jpeg' });
+                resolve(compressedFile);
+              },
+              'image/jpeg',
+              quality,
+            );
+          };
+
+          attemptCompress(maxQuality);
+        } catch (error) {
+          reject(error);
+        }
+      };
+
+      img.onerror = () => {
+        reject(new Error('Failed to load image for compression'));
+      };
+
+      // Read image from file blob
+      const reader = new FileReader();
+      reader.onload = e => {
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => {
+        reject(new Error('FileReader error during compression'));
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Helper: Run all tests in sequence
+  const runAllTests = async (file: File, fileType: 'image' | 'audio') => {
+    await testFileValidation(file, fileType);
+    await new Promise(r => setTimeout(r, 500));
+
+    await testBase64Conversion(file);
+    await new Promise(r => setTimeout(r, 500));
+
+    await testMultimodalPipeline(file, fileType);
+    await new Promise(r => setTimeout(r, 500));
+
+    await testBackgroundCommunication(file, fileType);
+    await new Promise(r => setTimeout(r, 500));
+
+    await testHybridAIInvoke(file, fileType);
+  };
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'success':
+        return 'border-green-500 bg-green-50';
+      case 'error':
+        return 'border-red-500 bg-red-50';
+      case 'loading':
+        return 'border-blue-500 bg-blue-50';
+      default:
+        return 'border-gray-300 bg-gray-50';
+    }
+  };
+
+  const getStatusBgClass = (status: string) => {
+    switch (status) {
+      case 'success':
+        return 'bg-green-100';
+      case 'error':
+        return 'bg-red-100';
+      case 'loading':
+        return 'bg-blue-100';
+      default:
+        return 'bg-gray-100';
+    }
+  };
+
+  return (
+    <div className="h-full overflow-y-auto bg-gradient-to-br from-slate-50 to-slate-100 p-6">
+      <div className="max-w-5xl mx-auto pb-6">
+        {/* Header */}
+        <div className="mb-8">
+          <h1 className="text-4xl font-bold text-slate-900 mb-2">🎬 Multimodal Testing Dashboard</h1>
+          <p className="text-slate-600">Test image and audio processing with HybridAIClient</p>
+        </div>
+
+        {/* Page Capture Component */}
+        <div className="mb-6">
+          <PageCaptureTest onPromptUpdate={setPrompt} />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Sidebar: File Upload */}
+          <div className="lg:col-span-1 space-y-4">
+            <div className="bg-white rounded-lg shadow-md p-4">
+              <h2 className="text-lg font-semibold text-slate-900 mb-4">📁 Files</h2>
+
+              {/* Image Upload */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-slate-700 mb-2">Image</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={e => setImageFile(e.target.files?.[0] || null)}
+                  className="block w-full text-sm text-slate-500
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-md file:border-0
+                    file:text-sm file:font-semibold
+                    file:bg-blue-50 file:text-blue-700
+                    hover:file:bg-blue-100"
+                />
+                {imageFile && (
+                  <div className="mt-2 text-xs text-slate-600">
+                    <p>📄 {imageFile.name}</p>
+                    <p>📊 {(imageFile.size / 1024).toFixed(2)} KB</p>
+                    <p>🏷️ {imageFile.type}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Audio Upload */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-slate-700 mb-2">Audio</label>
+
+                {/* Voice Recording Button */}
+                <div className="mb-3">
+                  {!isRecording ? (
+                    <button
+                      onClick={startVoiceRecording}
+                      disabled={isProcessing}
+                      className="w-full bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white px-4 py-2 rounded-md text-sm font-semibold transition flex items-center justify-center gap-2">
+                      🎤 Start Recording
+                    </button>
+                  ) : (
+                    <div className="space-y-2">
+                      <button
+                        onClick={stopVoiceRecording}
+                        className="w-full bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-semibold transition animate-pulse flex items-center justify-center gap-2">
+                        ⏹ Stop Recording ({recordingDuration}s)
+                      </button>
+                      <div className="flex items-center justify-center gap-2 text-xs text-red-600">
+                        <span className="animate-pulse">●</span>
+                        <span>Recording in progress...</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Or upload file */}
+                <div className="text-xs text-center text-slate-500 mb-2">- OR -</div>
+
+                <input
+                  type="file"
+                  accept="audio/*"
+                  onChange={e => setAudioFile(e.target.files?.[0] || null)}
+                  disabled={isRecording}
+                  className="block w-full text-sm text-slate-500
+                    file:mr-4 file:py-2 file:px-4
+                    file:rounded-md file:border-0
+                    file:text-sm file:font-semibold
+                    file:bg-green-50 file:text-green-700
+                    hover:file:bg-green-100
+                    disabled:opacity-50"
+                />
+                {audioFile && (
+                  <div className="mt-2 text-xs text-slate-600">
+                    <p>📄 {audioFile.name}</p>
+                    <p>📊 {(audioFile.size / 1024).toFixed(2)} KB</p>
+                    <p>🏷️ {audioFile.type}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Prompt */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-medium text-slate-700">Prompt</label>
+
+                  {/* Speech Recognition Buttons */}
+                  <div className="flex gap-2">
+                    {speechSupported && !isListening && (
+                      <>
+                        <button
+                          onClick={startSpeechRecognition}
+                          disabled={isProcessing}
+                          className="flex items-center gap-1 bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 disabled:from-purple-300 disabled:to-pink-300 text-white px-3 py-1.5 rounded-md text-xs font-semibold transition shadow-sm"
+                          title="Speak one phrase to transcribe">
+                          <span>🎙️</span>
+                          <span>Speak to Type</span>
+                        </button>
+                        <button
+                          onClick={startContinuousListening}
+                          disabled={isProcessing}
+                          className="flex items-center gap-1 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 disabled:from-indigo-300 disabled:to-purple-300 text-white px-3 py-1.5 rounded-md text-xs font-semibold transition shadow-sm"
+                          title="Keep listening continuously (say 'stop listening' to end)">
+                          <span>🔄</span>
+                          <span>Continuous</span>
+                        </button>
+                      </>
+                    )}
+
+                    {isListening && (
+                      <button
+                        onClick={stopSpeechRecognition}
+                        className="flex items-center gap-1 bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-md text-xs font-semibold transition shadow-sm animate-pulse">
+                        <span>⏹</span>
+                        <span>Stop Listening</span>
+                      </button>
+                    )}
+
+                    {!speechSupported && (
+                      <span className="text-xs text-red-600 font-medium">❌ Speech not supported</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Interim Transcript Display */}
+                {interimTranscript && (
+                  <div className="mb-2 p-2 bg-purple-50 border border-purple-200 rounded text-xs text-purple-700 italic">
+                    <span className="font-semibold">Speaking:</span> {interimTranscript}
+                  </div>
+                )}
+
+                <textarea
+                  value={prompt}
+                  onChange={e => setPrompt(e.target.value)}
+                  className="w-full p-2 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  rows={4}
+                  placeholder="Enter your prompt or click 'Speak to Type'..."
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Main Content: Test Buttons & Results */}
+          <div className="lg:col-span-2 space-y-4">
+            {/* Test Buttons */}
+            {(imageFile || audioFile) && (
+              <div className="bg-white rounded-lg shadow-md p-4">
+                <h2 className="text-lg font-semibold text-slate-900 mb-4">🧪 Tests</h2>
+
+                <div className="space-y-2">
+                  {imageFile && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-slate-700">Image Tests</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => testFileValidation(imageFile, 'image')}
+                          disabled={isProcessing}
+                          className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          ✓ Validate
+                        </button>
+                        <button
+                          onClick={() => testBase64Conversion(imageFile)}
+                          disabled={isProcessing}
+                          className="bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          📝 Base64
+                        </button>
+                        <button
+                          onClick={() => testMultimodalPipeline(imageFile, 'image')}
+                          disabled={isProcessing}
+                          className="bg-purple-500 hover:bg-purple-600 disabled:bg-purple-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          🔧 Pipeline
+                        </button>
+                        <button
+                          onClick={() => testBackgroundCommunication(imageFile, 'image')}
+                          disabled={isProcessing}
+                          className="bg-purple-500 hover:bg-purple-600 disabled:bg-purple-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          📤 BG Send
+                        </button>
+                        <button
+                          onClick={() => testHybridAIInvoke(imageFile, 'image')}
+                          disabled={isProcessing}
+                          className="bg-green-500 hover:bg-green-600 disabled:bg-green-300 text-white px-3 py-2 rounded text-sm font-medium transition col-span-2">
+                          🤖 HybridAI
+                        </button>
+                        <button
+                          onClick={() => runAllTests(imageFile, 'image')}
+                          disabled={isProcessing}
+                          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white px-3 py-2 rounded text-sm font-medium transition col-span-2">
+                          ▶️ Run All Tests
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {audioFile && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-medium text-slate-700">Audio Tests</p>
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          onClick={() => testFileValidation(audioFile, 'audio')}
+                          disabled={isProcessing}
+                          className="bg-orange-500 hover:bg-orange-600 disabled:bg-orange-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          ✓ Validate
+                        </button>
+                        <button
+                          onClick={() => testBase64Conversion(audioFile)}
+                          disabled={isProcessing}
+                          className="bg-orange-500 hover:bg-orange-600 disabled:bg-orange-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          📝 Base64
+                        </button>
+                        <button
+                          onClick={() => testMultimodalPipeline(audioFile, 'audio')}
+                          disabled={isProcessing}
+                          className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          🔧 Pipeline
+                        </button>
+                        <button
+                          onClick={() => testBackgroundCommunication(audioFile, 'audio')}
+                          disabled={isProcessing}
+                          className="bg-red-500 hover:bg-red-600 disabled:bg-red-300 text-white px-3 py-2 rounded text-sm font-medium transition">
+                          📤 BG Send
+                        </button>
+                        <button
+                          onClick={() => testHybridAIInvoke(audioFile, 'audio')}
+                          disabled={isProcessing}
+                          className="bg-green-500 hover:bg-green-600 disabled:bg-green-300 text-white px-3 py-2 rounded text-sm font-medium transition col-span-2">
+                          🤖 HybridAI
+                        </button>
+                        <button
+                          onClick={() => runAllTests(audioFile, 'audio')}
+                          disabled={isProcessing}
+                          className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white px-3 py-2 rounded text-sm font-medium transition col-span-2">
+                          ▶️ Run All Tests
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Current Result */}
+            <div className={`bg-white rounded-lg shadow-md p-4 border-l-4 ${getStatusColor(testResult.status)}`}>
+              <h2 className="text-lg font-semibold text-slate-900 mb-2">📊 Current Result</h2>
+              <p className="font-mono text-sm mb-2">{testResult.message}</p>
+              {testResult.data && (
+                <pre className="bg-slate-100 p-3 rounded text-xs overflow-auto max-h-48 border border-slate-200">
+                  {typeof testResult.data === 'string' ? testResult.data : JSON.stringify(testResult.data, null, 2)}
+                </pre>
+              )}
+            </div>
+
+            {/* Test History */}
+            {testHistory.length > 0 && (
+              <div className="bg-white rounded-lg shadow-md p-4">
+                <h2 className="text-lg font-semibold text-slate-900 mb-4">📜 Test History</h2>
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {testHistory.map((result, idx) => (
+                    <div
+                      key={idx}
+                      className={`p-2 rounded border-l-2 ${
+                        result.status === 'success'
+                          ? 'border-green-500 bg-green-50'
+                          : result.status === 'error'
+                            ? 'border-red-500 bg-red-50'
+                            : 'border-blue-500 bg-blue-50'
+                      }`}>
+                      <p className="text-xs font-mono">{result.timestamp}</p>
+                      <p className="text-xs">{result.message}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Info Box */}
+        <div className="mt-8 bg-blue-50 border-l-4 border-blue-500 p-4 rounded">
+          <h3 className="font-semibold text-blue-900 mb-2">📚 Testing Guide</h3>
+          <ol className="text-sm text-blue-800 space-y-1 list-decimal list-inside">
+            <li>
+              <strong>Validate:</strong> Checks MIME type and file size
+            </li>
+            <li>
+              <strong>Base64:</strong> Converts file to Base64 using FileReader API
+            </li>
+            <li>
+              <strong>Pipeline:</strong> Tests full multimodal processing pipeline
+            </li>
+            <li>
+              <strong>BG Send:</strong> Tests Chrome messaging API to background
+            </li>
+            <li>
+              <strong>HybridAI:</strong> Invokes full HybridAIClient with multimodal content
+            </li>
+            <li>
+              <strong>Run All Tests:</strong> Executes all tests in sequence
+            </li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -15,6 +15,10 @@ ${commonSecurityRules}
   - Do NOT make up anything, if you don't know the answer, just say "I don't know"
 
 3. If web_task is true, then helps break down web tasks into smaller steps and reason about the current state
+  - **CRITICAL: Check the "Current tab" URL before making any assumptions**
+    * If task is "open URL X" but current tab shows a different URL, the task is NOT complete
+    * If current URL is "chrome-extension://..." it means the browser is on the extension's page, NOT the target website
+    * Do NOT hallucinate that navigation happened - verify the actual current URL first
   - Analyze the current state and history
   - Evaluate progress towards the ultimate goal
   - Identify potential challenges or roadblocks
@@ -38,7 +42,10 @@ ${commonSecurityRules}
 
 # TASK COMPLETION VALIDATION:
 When determining if a task is "done":
-1. Read the task description carefully - neither miss any detailed requirements nor make up any requirements
+1. **FIRST: Compare the task requirements with the "Current tab" URL shown in the state**
+   - If task says "open https://example.com" but current URL is different, task is NOT done
+   - If current URL is "chrome-extension://..." the browser is still on the extension page
+2. Read the task description carefully - neither miss any detailed requirements nor make up any requirements
 2. Verify all aspects of the task have been completed successfully  
 3. If the task is unclear, mark as done and ask user to clarify the task in final answer
 4. If sign in or credentials are required to complete the task, you should:

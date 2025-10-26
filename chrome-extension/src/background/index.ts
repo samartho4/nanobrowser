@@ -10,6 +10,8 @@ import { SpeechToTextService } from './services/speechToText';
 import { injectBuildDomTreeScripts } from './browser/dom/service';
 import { analytics } from './services/analytics';
 import { HybridAIClient } from './llm/HybridAIClient';
+import { handleDOMCaptureMessage } from './handlers/dom-capture-handler';
+import { handleTestMultimodal } from './handlers/multimodal-test-handler';
 
 const logger = createLogger('background');
 
@@ -71,8 +73,8 @@ analyticsSettingsStore.subscribe(() => {
   });
 });
 
-// Listen for simple messages (e.g., from options page)
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// Listen for simple messages (e.g., from options page, side panel)
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle get_ai_status message
   if (message.type === 'get_ai_status') {
     if (hybridAIClient) {
@@ -81,6 +83,60 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else {
       sendResponse({ status: null });
     }
+    return true; // Indicates async response
+  }
+
+  // Handle get_provider_preference message
+  if (message.type === 'get_provider_preference') {
+    if (hybridAIClient) {
+      const preference = hybridAIClient.getProviderPreference();
+      sendResponse({ preference });
+    } else {
+      sendResponse({ preference: { userPreference: 'cloud', nanoAvailable: false } });
+    }
+    return true; // Indicates async response
+  }
+
+  // Handle set_provider_preference message
+  if (message.type === 'set_provider_preference') {
+    (async () => {
+      try {
+        if (hybridAIClient) {
+          await hybridAIClient.setUserPreference(message.payload?.userPreference || 'cloud');
+          const preference = hybridAIClient.getProviderPreference();
+          sendResponse({ ok: true, preference });
+        } else {
+          sendResponse({ ok: false, error: 'HybridAIClient not initialized' });
+        }
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to set provider preference',
+        });
+      }
+    })();
+    return true; // Indicates async response
+  }
+
+  // Handle DOM capture requests
+  if (message.type === 'CAPTURE_CURRENT_PAGE') {
+    handleDOMCaptureMessage(message, sender, sendResponse);
+    return true; // Indicates async response
+  }
+
+  // Handle multimodal test requests
+  if (message.type === 'TEST_MULTIMODAL') {
+    (async () => {
+      try {
+        const response = await handleTestMultimodal(message.payload, hybridAIClient);
+        sendResponse(response);
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    })();
     return true; // Indicates async response
   }
 

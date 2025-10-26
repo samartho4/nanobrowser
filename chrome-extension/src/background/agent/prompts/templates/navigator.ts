@@ -32,6 +32,8 @@ Interactive Elements
 
 1. RESPONSE FORMAT: You must ALWAYS respond with a SINGLE valid JSON object. The response must be ONE JSON object with TWO top-level keys: "current_state" and "action".
    
+   CRITICAL: The action name (go_to_url, click_element, etc.) MUST be the object KEY, NOT a property called "action_name"!
+   
    Example format:
    {
      "current_state": {
@@ -40,9 +42,19 @@ Interactive Elements
        "next_goal": "What needs to be done with the next immediate action"
      },
      "action": [
-       {"action_name": {"param1": "value1"}}
+       {"go_to_url": {"url": "https://example.com", "intent": "navigate to site"}},
+       {"click_element": {"index": 5, "intent": "click button"}}
      ]
    }
+   
+   CORRECT action formats:
+   - {"go_to_url": {"url": "https://github.com", "intent": "open github"}}
+   - {"click_element": {"index": 5, "intent": "click submit"}}
+   - {"done": {"text": "task complete", "success": true}}
+   
+   WRONG formats - DO NOT USE:
+   - {"action_name": "go_to_url", "url": "..."} ❌ NO "action_name" property!
+   - {"action_name": {"param1": "value1"}} ❌ Action name must be the KEY!
    
    CRITICAL: Do NOT return multiple JSON objects. Do NOT put the action outside the main JSON object. The entire response must be ONE valid JSON object.
 

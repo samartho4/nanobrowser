@@ -46,67 +46,87 @@ export class HybridAIClient {
   private availability: string = 'unavailable';
   private nanoModel: GeminiNanoChatModel | null = null;
   private lastError?: string;
+  private userPreference: 'nano' | 'cloud' = 'nano'; // Default to nano, but respects user choice
 
   /**
    * Initialize the client by checking Nano availability and creating model if available
    */
   async initialize(): Promise<void> {
-    // TEMPORARY: Skip Nano initialization for cloud-only testing
-    console.log('[HybridAIClient] TESTING MODE: Skipping Nano initialization, cloud-only mode');
-    this.availability = 'unavailable';
-    return;
+    // Load user preference from storage
+    try {
+      const result = await chrome.storage.local.get('provider_preference');
+      if (result?.provider_preference) {
+        this.userPreference = result.provider_preference;
+        console.log('[HybridAIClient] Loaded user preference:', this.userPreference);
+      }
+    } catch (error) {
+      console.warn('[HybridAIClient] Failed to load provider preference, using default (nano):', error);
+    }
 
-    // try {
-    //   // Check if Prompt API is available
-    //   if (globalThis.LanguageModel) {
-    //     // Check availability with language specified (Chrome requires this)
-    //     this.availability = await globalThis.LanguageModel.availability({ language: 'en' });
+    // // TEMPORARY: Skip Nano initialization for cloud-only testing
+    // console.log('[HybridAIClient] TESTING MODE: Skipping Nano initialization, cloud-only mode');
+    // this.availability = 'unavailable';
+    // return;
 
-    //     console.log('[HybridAIClient] Nano availability:', this.availability);
+    try {
+      // Check if Prompt API is available
+      if (globalThis.LanguageModel) {
+        // Check availability with language specified (Chrome requires this)
+        this.availability = await globalThis.LanguageModel.availability({ language: 'en' });
 
-    //     // Create Nano model if available
-    //     if (this.availability === 'available' || this.availability === 'readily') {
-    //       this.nanoModel = new GeminiNanoChatModel({
-    //         // Specify language for optimal output quality
-    //         systemPrompt: undefined, // Will be set per request
-    //       });
-    //       console.log('[HybridAIClient] Initialized with Gemini Nano');
-    //     } else {
-    //       console.log('[HybridAIClient] Nano not available, will use cloud fallback');
-    //     }
-    //   } else {
-    //     console.log('[HybridAIClient] LanguageModel API not found, will use cloud fallback');
-    //     this.availability = 'unavailable';
-    //   }
-    // } catch (error) {
-    //   console.error('[HybridAIClient] Initialization error:', error);
-    //   this.lastError = error instanceof Error ? error.message : String(error);
-    //   this.availability = 'unavailable';
-    // }
+        console.log('[HybridAIClient] Nano availability:', this.availability);
+
+        // Create Nano model if available
+        if (this.availability === 'available' || this.availability === 'readily') {
+          this.nanoModel = new GeminiNanoChatModel({
+            // Specify language for optimal output quality
+            systemPrompt: undefined, // Will be set per request
+          });
+          console.log('[HybridAIClient] Initialized with Gemini Nano');
+        } else {
+          console.log('[HybridAIClient] Nano not available, will use cloud fallback');
+        }
+      } else {
+        console.log('[HybridAIClient] LanguageModel API not found, will use cloud fallback');
+        this.availability = 'unavailable';
+      }
+    } catch (error) {
+      console.error('[HybridAIClient] Initialization error:', error);
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.availability = 'unavailable';
+    }
   }
 
   /**
-   * Invoke AI with Nano-first, cloud-fallback strategy
+   * Invoke AI based on user preference (Nano if available, fallback to cloud)
    */
   async invoke(options: InvokeOptions): Promise<InvokeResponse> {
-    // TEMPORARY: Force cloud-only for testing Firebase setup
-    // TODO: Remove this to re-enable Nano
-    console.log('[HybridAIClient] TESTING MODE: Skipping Nano, using cloud only');
-    return await this.invokeBridge(options);
-
-    // Try Nano first if available
-    // if (this.nanoModel && (this.availability === 'available' || this.availability === 'readily')) {
-    //   try {
-    //     const result = await this.invokeNano(options);
-    //     return { content: result, provider: 'nano' };
-    //   } catch (error) {
-    //     console.warn('[HybridAIClient] Nano failed, falling back to cloud:', error);
-    //     this.lastError = error instanceof Error ? error.message : String(error);
-    //   }
-    // }
-
-    // // Fallback to side panel bridge
+    // // TEMPORARY: Force cloud-only for testing Firebase setup
+    // // TODO: Remove this to re-enable Nano
+    // console.log('[HybridAIClient] TESTING MODE: Skipping Nano, using cloud only');
     // return await this.invokeBridge(options);
+
+    // Check user preference
+    console.log('[HybridAIClient] User preference:', this.userPreference, 'Nano available:', !!this.nanoModel);
+
+    // If user prefers Nano and it's available, try Nano first
+    if (
+      this.userPreference === 'nano' &&
+      this.nanoModel &&
+      (this.availability === 'available' || this.availability === 'readily')
+    ) {
+      try {
+        const result = await this.invokeNano(options);
+        return { content: result, provider: 'nano' };
+      } catch (error) {
+        console.warn('[HybridAIClient] Nano failed, falling back to cloud:', error);
+        this.lastError = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    // If user prefers cloud OR Nano is unavailable/failed, use cloud
+    console.log('[HybridAIClient] Using cloud provider');
+    return await this.invokeBridge(options);
   }
 
   /**
@@ -201,6 +221,55 @@ export class HybridAIClient {
         availability: this.availability as any,
       },
       lastError: this.lastError,
+    };
+  }
+
+  /**
+   * Set user's provider preference (nano or cloud)
+   */
+  async setUserPreference(preference: 'nano' | 'cloud'): Promise<void> {
+    // Validate preference
+    if (preference !== 'nano' && preference !== 'cloud') {
+      throw new Error('Invalid provider preference. Must be "nano" or "cloud".');
+    }
+
+    // Don't allow setting Nano if it's not available
+    if (preference === 'nano' && this.availability === 'unavailable') {
+      console.warn('[HybridAIClient] Nano not available, ignoring preference change to nano');
+      return;
+    }
+
+    this.userPreference = preference;
+    console.log('[HybridAIClient] User preference updated to:', preference);
+
+    // Persist to storage
+    try {
+      await chrome.storage.local.set({ provider_preference: preference });
+      console.log('[HybridAIClient] Provider preference saved to storage');
+    } catch (error) {
+      console.error('[HybridAIClient] Failed to save provider preference:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get user's current provider preference
+   */
+  getUserPreference(): 'nano' | 'cloud' {
+    return this.userPreference;
+  }
+
+  /**
+   * Get provider preference details (for UI)
+   */
+  getProviderPreference(): {
+    userPreference: 'nano' | 'cloud';
+    nanoAvailable: boolean;
+  } {
+    const nanoAvailable = this.availability === 'available' || this.availability === 'readily';
+    return {
+      userPreference: this.userPreference,
+      nanoAvailable,
     };
   }
 }
