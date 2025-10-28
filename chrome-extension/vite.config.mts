@@ -67,6 +67,7 @@ export default defineConfig(({ mode }) => {
   define: {
     'import.meta.env.DEV': isDev,
     'import.meta.env.VITE_POSTHOG_API_KEY': JSON.stringify(env.VITE_POSTHOG_API_KEY || process.env.VITE_POSTHOG_API_KEY || ''),
+    'import.meta.env.VITE_GMAIL_CLIENT_ID': JSON.stringify(env.VITE_GMAIL_CLIENT_ID || process.env.VITE_GMAIL_CLIENT_ID || ''),
   },
 
   envDir: '../',

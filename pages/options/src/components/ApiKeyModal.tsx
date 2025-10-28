@@ -23,8 +23,43 @@ export const ApiKeyModal = ({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [isOAuthFlow, setIsOAuthFlow] = useState(false);
 
   if (!isOpen) return null;
+
+  const isGmail = tool.id === 'gmail';
+
+  const handleOAuthClick = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      setIsOAuthFlow(true);
+
+      // Send message to background to initiate OAuth authentication
+      chrome.runtime.sendMessage(
+        {
+          type: 'TOOL_REQUEST',
+          tool: 'gmail',
+          action: 'AUTHENTICATE', // Changed from INITIALIZE to AUTHENTICATE
+        },
+        response => {
+          if (response?.success) {
+            // OAuth flow completed successfully
+            // Save empty config to mark tool as configured
+            handleSave();
+          } else {
+            setError(response?.error || 'Failed to authenticate. Please try again.');
+            setLoading(false);
+            setIsOAuthFlow(false);
+          }
+        },
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to initiate authentication');
+      setLoading(false);
+      setIsOAuthFlow(false);
+    }
+  };
 
   const handleLogoError = (e: React.SyntheticEvent<HTMLImageElement>) => {
     e.currentTarget.style.display = 'none';
@@ -178,12 +213,28 @@ export const ApiKeyModal = ({
                   : 'border-green-300 bg-green-50 text-green-700'
               } p-3`}>
               <FiCheck className="mt-0.5 h-5 w-5 flex-shrink-0" />
-              <p className="text-sm">Configuration saved successfully!</p>
+              <p className="text-sm">
+                {isGmail ? 'Gmail authenticated successfully!' : 'Configuration saved successfully!'}
+              </p>
             </div>
           )}
 
-          {/* Form Fields */}
-          <div className="space-y-4">{tool.configFields.map(field => renderField(field))}</div>
+          {/* Gmail OAuth Info */}
+          {isGmail && !success && (
+            <div
+              className={`rounded-lg border ${
+                isDarkMode ? 'border-blue-700 bg-blue-950/30 text-blue-200' : 'border-blue-300 bg-blue-50 text-blue-700'
+              } p-3`}>
+              <p className="text-xs font-medium">📧 Gmail Authentication</p>
+              <p className="text-xs leading-relaxed">
+                Click the button below to securely authenticate with your Google account. We'll only access your email
+                with your permission.
+              </p>
+            </div>
+          )}
+
+          {/* Form Fields (hidden for Gmail) */}
+          {!isGmail && <div className="space-y-4">{tool.configFields.map(field => renderField(field))}</div>}
 
           {/* Security Note */}
           <div
@@ -192,8 +243,9 @@ export const ApiKeyModal = ({
             } p-3`}>
             <p className="text-xs font-medium">🔒 Security</p>
             <p className="text-xs leading-relaxed">
-              Your API keys are stored securely in your browser's local storage and never sent to external servers
-              except when making authorized API calls.
+              {isGmail
+                ? 'Your authentication tokens are stored securely in your browser and never shared externally.'
+                : "Your API keys are stored securely in your browser's local storage and never sent to external servers except when making authorized API calls."}
             </p>
           </div>
         </div>
@@ -210,18 +262,40 @@ export const ApiKeyModal = ({
             }`}>
             Cancel
           </button>
-          <button
-            onClick={handleSave}
-            disabled={loading || success}
-            className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
-              success
-                ? 'bg-green-600'
-                : isDarkMode
-                  ? 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'
-                  : 'bg-blue-500 hover:bg-blue-600 disabled:opacity-50'
-            }`}>
-            {loading ? 'Saving...' : success ? 'Saved!' : 'Save Configuration'}
-          </button>
+
+          {isGmail ? (
+            <button
+              onClick={handleOAuthClick}
+              disabled={loading || success}
+              className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                success
+                  ? 'bg-green-600'
+                  : isDarkMode
+                    ? 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'
+                    : 'bg-blue-500 hover:bg-blue-600 disabled:opacity-50'
+              }`}>
+              {loading
+                ? isOAuthFlow
+                  ? 'Authenticating...'
+                  : 'Saving...'
+                : success
+                  ? '✅ Connected!'
+                  : 'Authenticate with Google'}
+            </button>
+          ) : (
+            <button
+              onClick={handleSave}
+              disabled={loading || success}
+              className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors ${
+                success
+                  ? 'bg-green-600'
+                  : isDarkMode
+                    ? 'bg-blue-600 hover:bg-blue-700 disabled:opacity-50'
+                    : 'bg-blue-500 hover:bg-blue-600 disabled:opacity-50'
+              }`}>
+              {loading ? 'Saving...' : success ? 'Saved!' : 'Save Configuration'}
+            </button>
+          )}
         </div>
       </div>
     </div>

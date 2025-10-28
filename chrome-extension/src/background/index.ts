@@ -12,6 +12,7 @@ import { analytics } from './services/analytics';
 import { HybridAIClient } from './llm/HybridAIClient';
 import { handleDOMCaptureMessage } from './handlers/dom-capture-handler';
 import { handleTestMultimodal } from './handlers/multimodal-test-handler';
+import { handleGmailMessage, cleanupGmailService } from './toolHandlers/gmailHandler';
 
 const logger = createLogger('background');
 
@@ -137,6 +138,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         });
       }
     })();
+    return true; // Indicates async response
+  }
+
+  // Handle Gmail tool requests
+  if (message.type === 'TOOL_REQUEST' && message.tool === 'gmail') {
+    handleGmailMessage(message, sender, sendResponse);
     return true; // Indicates async response
   }
 

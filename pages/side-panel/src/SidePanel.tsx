@@ -12,6 +12,7 @@ import ChatInput from './components/ChatInput';
 import ChatHistoryList from './components/ChatHistoryList';
 import BookmarkList from './components/BookmarkList';
 import StatusChip from './components/StatusChip';
+import { GmailSidePanel } from './components/GmailSidePanel';
 // import { PageCaptureTest } from './components/PageCaptureTest'; // COMMENTED OUT
 import { MultimodalTestComponent } from './components/MultimodalTest';
 import { EventType, type AgentEvent, ExecutionState } from './types/event';
@@ -31,6 +32,7 @@ const SidePanel = () => {
   const [showStopButton, setShowStopButton] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [showGmail, setShowGmail] = useState(false);
   const [showMultimodalTest, setShowMultimodalTest] = useState(false);
   const [chatSessions, setChatSessions] = useState<Array<{ id: string; title: string; createdAt: number }>>([]);
   const [isFollowUpMode, setIsFollowUpMode] = useState(false);
@@ -1036,6 +1038,16 @@ const SidePanel = () => {
                 </button>
                 <button
                   type="button"
+                  onClick={() => setShowGmail(!showGmail)}
+                  onKeyDown={e => e.key === 'Enter' && setShowGmail(!showGmail)}
+                  className={`header-icon ${showGmail ? (isDarkMode ? 'text-sky-500' : 'text-sky-600') : isDarkMode ? 'text-sky-400 hover:text-sky-300' : 'text-sky-400 hover:text-sky-500'} cursor-pointer`}
+                  aria-label="Gmail"
+                  title="Gmail Inbox"
+                  tabIndex={0}>
+                  📧
+                </button>
+                <button
+                  type="button"
                   onClick={handleLoadHistory}
                   onKeyDown={e => e.key === 'Enter' && handleLoadHistory()}
                   className={`header-icon ${isDarkMode ? 'text-sky-400 hover:text-sky-300' : 'text-sky-400 hover:text-sky-500'} cursor-pointer`}
@@ -1076,6 +1088,10 @@ const SidePanel = () => {
         {showMultimodalTest ? (
           <div className="flex-1 overflow-hidden">
             <MultimodalTestComponent />
+          </div>
+        ) : showGmail ? (
+          <div className="flex-1 overflow-hidden">
+            <GmailSidePanel />
           </div>
         ) : showHistory ? (
           <div className="flex-1 overflow-hidden">

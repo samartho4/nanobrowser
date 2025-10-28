@@ -71,24 +71,9 @@ export const AVAILABLE_TOOLS: Tool[] = [
     category: 'communication',
     isConfigured: false,
     requiresAuth: true,
-    configFields: [
-      {
-        id: 'api_key',
-        label: 'API Key',
-        type: 'password',
-        placeholder: 'Enter your Gmail API key',
-        required: true,
-        helpText: 'Get your API key from Google Cloud Console',
-      },
-      {
-        id: 'email',
-        label: 'Email Address',
-        type: 'text',
-        placeholder: 'your-email@gmail.com',
-        required: true,
-        helpText: 'The Gmail account to use for automation',
-      },
-    ],
+    configFields: [],
+    // Note: Gmail uses OAuth 2.0 authentication (no API key needed)
+    // See ApiKeyModal.tsx for OAuth flow implementation
   },
   {
     id: 'google_calendar',

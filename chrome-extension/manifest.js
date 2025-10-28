@@ -1,5 +1,17 @@
 import fs from 'node:fs';
 import deepmerge from 'deepmerge';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import dotenv from 'dotenv';
+
+// Load .env file from parent directory
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const envPath = resolve(__dirname, '..', '.env');
+if (fs.existsSync(envPath)) {
+  const envConfig = dotenv.parse(fs.readFileSync(envPath));
+  Object.assign(process.env, envConfig);
+}
 
 const packageJson = JSON.parse(fs.readFileSync('../package.json', 'utf8'));
 
@@ -60,7 +72,12 @@ const manifest = withOperaSidebar(
     name: 'Shannon',
     version: packageJson.version,
     description: '__MSG_app_metadata_description__',
-    host_permissions: ['<all_urls>'],
+    host_permissions: [
+      '<all_urls>',
+      'https://www.googleapis.com/*',
+      'https://oauth2.googleapis.com/*',
+      'https://gmail.googleapis.com/*',
+    ],
     permissions: [
       'storage',
       'scripting',
@@ -70,6 +87,7 @@ const manifest = withOperaSidebar(
       'unlimitedStorage',
       'webNavigation',
       'alarms',
+      'identity',
     ],
     options_page: 'options/index.html',
     background: {
@@ -91,7 +109,16 @@ const manifest = withOperaSidebar(
     ],
     content_security_policy: {
       extension_pages:
-        "script-src 'self'; object-src 'self'; connect-src 'self' https://firebasevertexai.googleapis.com https://firebasestorage.googleapis.com https://www.googleapis.com https://generativelanguage.googleapis.com",
+        "script-src 'self'; object-src 'self'; connect-src 'self' https://firebasevertexai.googleapis.com https://firebasestorage.googleapis.com https://www.googleapis.com https://generativelanguage.googleapis.com https://oauth2.googleapis.com https://gmail.googleapis.com",
+    },
+    oauth2: {
+      client_id: process.env.VITE_GMAIL_CLIENT_ID || '',
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.readonly',
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/gmail.send',
+        'https://www.googleapis.com/auth/gmail.labels',
+      ],
     },
     web_accessible_resources: [
       {
