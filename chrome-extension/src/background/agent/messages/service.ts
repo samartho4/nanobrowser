@@ -1,4 +1,4 @@
-import { type BaseMessage, AIMessage, HumanMessage, type SystemMessage, ToolMessage } from '@langchain/core/messages';
+import { type BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/core/messages';
 import { MessageHistory, MessageMetadata } from '@src/background/agent/messages/views';
 import { createLogger } from '@src/background/log';
 import {
@@ -7,6 +7,13 @@ import {
   splitUserTextAndAttachments,
   wrapAttachments,
 } from '@src/background/agent/messages/utils';
+import {
+  contextManager,
+  type ContextItem,
+  type CompressionStrategy,
+  COMPRESSION_STRATEGIES,
+} from '@src/services/context/ContextManager';
+import { estimateTokenCount as sharedEstimateTokenCount } from '@src/utils/tokenEstimator';
 
 const logger = createLogger('MessageManager');
 
@@ -436,5 +443,268 @@ export default class MessageManager {
     const id = toolCallId ?? this.nextToolId();
     const msg = new ToolMessage({ content, tool_call_id: String(id) });
     this.addMessageWithTokens(msg, messageType);
+  }
+
+  // ============================================================================
+  // DEEP AGENTS EXTENSIONS - Context Management Integration
+  // ============================================================================
+
+  /**
+   * Build model context using ContextManager - Deep Agent harness wrapper
+   * Prepares final prompt context from ContextManager with workspace awareness
+   */
+  public async buildModelContext(
+    workspaceId: string,
+    sessionId: string,
+    query: string,
+    tokenLimit?: number,
+  ): Promise<{
+    messages: BaseMessage[];
+    contextItems: ContextItem[];
+    totalTokens: number;
+  }> {
+    try {
+      const effectiveTokenLimit = tokenLimit || this.settings.maxInputTokens;
+
+      // Get workspace-scoped context using ContextManager SELECT pillar
+      const contextItems = await contextManager.select(workspaceId, query, effectiveTokenLimit * 0.7, {
+        types: ['message', 'memory', 'gmail', 'page'],
+        recencyBias: 0.3,
+        semanticThreshold: 0.3,
+        priorityWeighting: true,
+      });
+
+      // Get current message history
+      const currentMessages = this.getMessages();
+      const currentTokens = this.history.totalTokens;
+
+      // Calculate remaining token budget for context
+      const contextTokenBudget = effectiveTokenLimit - currentTokens;
+      const contextTokens = contextItems.reduce((sum, item) => sum + item.metadata.tokens, 0);
+
+      // If context exceeds budget, compress it
+      let finalContextItems = contextItems;
+      if (contextTokens > contextTokenBudget && contextTokenBudget > 0) {
+        const compressionResult = await contextManager.compress(
+          contextItems,
+          COMPRESSION_STRATEGIES.balanced,
+          contextTokenBudget,
+        );
+        finalContextItems = compressionResult.compressed;
+      }
+
+      // Convert context items to messages and prepend to current messages
+      const contextMessages: BaseMessage[] = [];
+      for (const item of finalContextItems) {
+        const contextMsg = new HumanMessage({
+          content: `[Context from ${item.type}${item.agentId ? ` (${item.agentId})` : ''}]: ${item.content}`,
+        });
+        contextMessages.push(contextMsg);
+      }
+
+      const allMessages = [...contextMessages, ...currentMessages];
+      const totalTokens = currentTokens + finalContextItems.reduce((sum, item) => sum + item.metadata.tokens, 0);
+
+      return {
+        messages: allMessages,
+        contextItems: finalContextItems,
+        totalTokens,
+      };
+    } catch (error) {
+      logger.error('Failed to build model context:', error);
+      // Fallback to current messages only
+      return {
+        messages: this.getMessages(),
+        contextItems: [],
+        totalTokens: this.history.totalTokens,
+      };
+    }
+  }
+
+  /**
+   * Get workspace-scoped context selection using ContextManager SELECT pillar
+   */
+  public async getWorkspaceContext(
+    workspaceId: string,
+    query: string,
+    tokenLimit: number,
+    sessionId?: string,
+  ): Promise<{
+    items: ContextItem[];
+    totalTokens: number;
+    compressionApplied: boolean;
+  }> {
+    try {
+      const items = await contextManager.select(workspaceId, query, tokenLimit, {
+        types: ['message', 'memory', 'gmail'],
+        recencyBias: 0.3,
+        semanticThreshold: 0.5,
+      });
+
+      const totalTokens = items.reduce((sum, item) => sum + item.metadata.tokens, 0);
+
+      return {
+        items,
+        totalTokens,
+        compressionApplied: false,
+      };
+    } catch (error) {
+      logger.error('Failed to get workspace context:', error);
+      return {
+        items: [],
+        totalTokens: 0,
+        compressionApplied: false,
+      };
+    }
+  }
+
+  /**
+   * Compress messages using user-controlled compression with strategy selection
+   */
+  public async compressMessages(
+    workspaceId: string,
+    sessionId: string,
+    strategy: CompressionStrategy,
+    targetTokens?: number,
+  ): Promise<{
+    originalMessages: BaseMessage[];
+    compressedMessages: BaseMessage[];
+    originalTokens: number;
+    compressedTokens: number;
+    compressionRatio: number;
+  }> {
+    try {
+      const originalMessages = this.getMessages();
+      const originalTokens = this.history.totalTokens;
+
+      // Convert messages to context items for compression
+      const contextItems: ContextItem[] = originalMessages.map((msg, index) => ({
+        id: `msg-${index}`,
+        type: 'message' as const,
+        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        metadata: {
+          source: msg.constructor.name,
+          timestamp: Date.now() - (originalMessages.length - index) * 1000, // Approximate timestamps
+          tokens: this._countTokens(msg),
+          priority: msg instanceof SystemMessage ? 5 : 3,
+          workspaceId,
+          sessionId,
+        },
+      }));
+
+      // Apply compression
+      const effectiveTargetTokens = targetTokens || Math.floor(originalTokens * strategy.targetRatio);
+      const compressionResult = await contextManager.compress(contextItems, strategy, effectiveTargetTokens);
+
+      // Convert compressed context items back to messages
+      const compressedMessages: BaseMessage[] = compressionResult.compressed.map(item => {
+        // Try to preserve original message type
+        if (item.metadata.source === 'SystemMessage') {
+          return new SystemMessage(item.content);
+        } else if (item.metadata.source === 'AIMessage') {
+          return new AIMessage(item.content);
+        } else if (item.metadata.source === 'ToolMessage') {
+          return new ToolMessage({ content: item.content, tool_call_id: 'compressed' });
+        } else {
+          return new HumanMessage(item.content);
+        }
+      });
+
+      return {
+        originalMessages,
+        compressedMessages,
+        originalTokens,
+        compressedTokens: compressionResult.compressedTokens,
+        compressionRatio: compressionResult.compressionRatio,
+      };
+    } catch (error) {
+      logger.error('Failed to compress messages:', error);
+      const originalMessages = this.getMessages();
+      return {
+        originalMessages,
+        compressedMessages: originalMessages,
+        originalTokens: this.history.totalTokens,
+        compressedTokens: this.history.totalTokens,
+        compressionRatio: 1.0,
+      };
+    }
+  }
+
+  /**
+   * Select relevant messages with workspace boundaries and memory relevance
+   */
+  public async selectRelevantMessages(
+    workspaceId: string,
+    query: string,
+    maxMessages: number,
+    sessionId?: string,
+  ): Promise<{
+    messages: BaseMessage[];
+    relevanceScores: number[];
+    totalTokens: number;
+  }> {
+    try {
+      const allMessages = this.getMessages();
+
+      // Convert messages to context items for relevance scoring
+      const contextItems: ContextItem[] = allMessages.map((msg, index) => ({
+        id: `msg-${index}`,
+        type: 'message' as const,
+        content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+        metadata: {
+          source: msg.constructor.name,
+          timestamp: Date.now() - (allMessages.length - index) * 1000,
+          tokens: this._countTokens(msg),
+          priority: msg instanceof SystemMessage ? 5 : 3,
+          workspaceId,
+          sessionId,
+          relevanceScore: 0.5, // Will be updated by ContextManager
+        },
+      }));
+
+      // Use ContextManager to select most relevant items
+      const selectedItems = await contextManager.select(workspaceId, query, this.settings.maxInputTokens, {
+        maxItems: maxMessages,
+        semanticThreshold: 0.3,
+        priorityWeighting: true,
+      });
+
+      // Convert back to messages and extract relevance scores
+      const selectedMessages: BaseMessage[] = [];
+      const relevanceScores: number[] = [];
+      let totalTokens = 0;
+
+      for (const item of selectedItems) {
+        const messageIndex = parseInt(item.id.replace('msg-', ''));
+        if (messageIndex >= 0 && messageIndex < allMessages.length) {
+          selectedMessages.push(allMessages[messageIndex]);
+          relevanceScores.push(item.metadata.relevanceScore || 0.5);
+          totalTokens += item.metadata.tokens;
+        }
+      }
+
+      return {
+        messages: selectedMessages,
+        relevanceScores,
+        totalTokens,
+      };
+    } catch (error) {
+      logger.error('Failed to select relevant messages:', error);
+      const allMessages = this.getMessages();
+      const recentMessages = allMessages.slice(-maxMessages);
+      return {
+        messages: recentMessages,
+        relevanceScores: recentMessages.map(() => 0.5),
+        totalTokens: recentMessages.reduce((sum, msg) => sum + this._countTokens(msg), 0),
+      };
+    }
+  }
+
+  /**
+   * Estimate token count consistently throughout the system
+   * Shared utility method for token estimation
+   */
+  public estimateTokenCount(text: string): number {
+    return sharedEstimateTokenCount(text);
   }
 }

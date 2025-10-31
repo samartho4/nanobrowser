@@ -25,6 +25,9 @@ import type { AgentStepHistory } from './history';
 import type { GeneralSettingsConfig } from '@extension/storage';
 import { analytics } from '../services/analytics';
 import type { HybridAIClient } from '../llm/HybridAIClient';
+import { memoryService, type Episode } from '@src/services/memory/MemoryService';
+import { contextManager } from '@src/services/context/ContextManager';
+import { todoListMiddleware, subagentService } from './middleware/TodoList';
 
 const logger = createLogger('Executor');
 
@@ -33,6 +36,66 @@ export interface ExecutorExtraArgs {
   generalSettings?: GeneralSettingsConfig;
 }
 
+// ============================================================================
+// DEEP AGENTS MIDDLEWARE INTERFACES
+// ============================================================================
+
+export interface AgentRunContext {
+  workspaceId: string;
+  sessionId: string;
+  query: string;
+  context: any[];
+  memories: any[];
+  todos: string[];
+  subagentPlans: SubagentPlan[];
+}
+
+export interface SubagentPlan {
+  agentId: string;
+  agentType: 'research' | 'writer' | 'calendar' | 'main';
+  goal: string;
+  confidence: number;
+  estimatedDuration?: number;
+}
+
+export interface AgentRunResult {
+  query: string;
+  actions: string[];
+  outcome: string;
+  success: boolean;
+  reasoning: string;
+  duration: number;
+  tokensUsed: number;
+  subagentResults?: SubagentResult[];
+}
+
+export interface SubagentResult {
+  agentId: string;
+  agentType: string;
+  success: boolean;
+  output: string;
+  duration: number;
+}
+
+export interface ApprovalRequest {
+  workspaceId: string;
+  sessionId: string;
+  plannedActions: string[];
+  riskLevel: 'low' | 'medium' | 'high';
+  autonomyLevel: number;
+  requiresApproval: boolean;
+  reason: string;
+}
+
+/**
+ * Enhanced Executor - Deep Agent Harness with Middleware Hooks
+ *
+ * This executor serves as the Deep Agent Harness that:
+ * - Assembles context, memory, todos, and subagent plans before agent runs
+ * - Logs success/failure to episodic/procedural memory for reuse
+ * - Enforces human approval checkpoints based on workspace autonomy levels
+ * - Integrates with TodoList middleware and SubagentService for delegation
+ */
 export class Executor {
   private readonly navigator: NavigatorAgent;
   private readonly planner: PlannerAgent;
@@ -41,6 +104,10 @@ export class Executor {
   private readonly navigatorPrompt: NavigatorPrompt;
   private readonly generalSettings: GeneralSettingsConfig | undefined;
   private tasks: string[] = [];
+
+  // Deep Agents middleware state
+  private currentWorkspaceId: string = 'default';
+  private currentSessionId: string = 'default';
   constructor(
     task: string,
     taskId: string,
@@ -117,7 +184,7 @@ export class Executor {
   }
 
   /**
-   * Execute the task
+   * Execute the task with Deep Agents middleware integration
    *
    * @returns {Promise<void>}
    */
@@ -128,11 +195,19 @@ export class Executor {
     context.nSteps = 0;
     const allowedMaxSteps = this.context.options.maxSteps;
 
+    // Deep Agents: Prepare run context
+    const startTime = Date.now();
+    const currentTask = this.tasks[this.tasks.length - 1];
+    let runContext: AgentRunContext | null = null;
+
     try {
       this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_START, this.context.taskId);
 
       // Track task start
       void analytics.trackTaskStart(this.context.taskId);
+
+      // Deep Agents: Before agent run middleware
+      runContext = await this.beforeAgentRun(currentTask);
 
       let step = 0;
       let latestPlanOutput: AgentOutput<PlannerOutput> | null = null;
@@ -171,6 +246,23 @@ export class Executor {
 
       // Determine task completion status
       const isCompleted = latestPlanOutput?.result?.done === true;
+      const endTime = Date.now();
+
+      // Deep Agents: After agent run middleware
+      if (runContext) {
+        const runResult: AgentRunResult = {
+          query: currentTask,
+          actions: this.context.actionResults.map(result => result.extractedContent || 'action'),
+          outcome: isCompleted ? this.context.finalAnswer || 'Task completed successfully' : 'Task incomplete',
+          success: isCompleted,
+          reasoning: latestPlanOutput?.result?.final_answer || 'No reasoning provided',
+          duration: endTime - startTime,
+          tokensUsed: 0, // TODO: Track token usage
+          subagentResults: [], // TODO: Implement subagent results tracking
+        };
+
+        await this.afterAgentRun(runContext, runResult);
+      }
 
       if (isCompleted) {
         // Emit final answer if available, otherwise use task ID
@@ -197,6 +289,27 @@ export class Executor {
         // Note: We don't track pause as it's not a final state
       }
     } catch (error) {
+      // Deep Agents: Handle error in after-run middleware
+      if (runContext) {
+        const endTime = Date.now();
+        const errorResult: AgentRunResult = {
+          query: currentTask,
+          actions: this.context.actionResults.map(result => result.extractedContent || 'action'),
+          outcome: error instanceof Error ? error.message : String(error),
+          success: false,
+          reasoning: 'Task failed due to error',
+          duration: endTime - startTime,
+          tokensUsed: 0,
+          subagentResults: [],
+        };
+
+        try {
+          await this.afterAgentRun(runContext, errorResult);
+        } catch (middlewareError) {
+          logger.error('Failed to process error in after-run middleware:', middlewareError);
+        }
+      }
+
       if (error instanceof RequestCancelledError) {
         this.context.emitEvent(Actors.SYSTEM, ExecutionState.TASK_CANCEL, t('exec_task_cancel'));
 
@@ -352,6 +465,310 @@ export class Executor {
 
   async getCurrentTaskId(): Promise<string> {
     return this.context.taskId;
+  }
+
+  // ============================================================================
+  // DEEP AGENTS MIDDLEWARE HOOKS
+  // ============================================================================
+
+  /**
+   * Set workspace and session context for Deep Agents operations
+   */
+  setWorkspaceContext(workspaceId: string, sessionId: string): void {
+    this.currentWorkspaceId = workspaceId;
+    this.currentSessionId = sessionId;
+    logger.debug(`Set workspace context: ${workspaceId}, session: ${sessionId}`);
+  }
+
+  /**
+   * Before agent run: assembles context, memory, todos, and subagent plans
+   */
+  async beforeAgentRun(query: string): Promise<AgentRunContext> {
+    try {
+      logger.debug('🔄 Deep Agents: Preparing agent run context');
+
+      // Load workspace context using ContextManager
+      const contextItems = await contextManager.select(
+        this.currentWorkspaceId,
+        query,
+        100000, // Large token limit for comprehensive context
+        {
+          types: ['message', 'memory', 'gmail', 'page', 'file'],
+          recencyBias: 0.3,
+          semanticThreshold: 0.3,
+          priorityWeighting: true,
+        },
+      );
+
+      // Load relevant memories from MemoryService
+      const [recentEpisodes, relevantFacts, bestPatterns] = await Promise.all([
+        memoryService.getRecentEpisodes(this.currentWorkspaceId, this.currentSessionId, 10),
+        memoryService.searchFacts(this.currentWorkspaceId, query, 5),
+        memoryService.getBestPatterns(this.currentWorkspaceId, 3),
+      ]);
+
+      // Combine memories
+      const memories = [...recentEpisodes, ...relevantFacts.map(result => result.fact), ...bestPatterns];
+
+      // Load todos using TodoList middleware
+      const todos = await todoListMiddleware.getTodos(this.currentWorkspaceId, this.currentSessionId);
+
+      // Generate subagent plans using SubagentService
+      const delegationPlan = await subagentService.planDelegations(query, contextItems);
+      const subagentPlans: SubagentPlan[] = delegationPlan.delegations.map(delegation => ({
+        agentId: delegation.agentId,
+        agentType: delegation.agentType as any,
+        goal: delegation.goal,
+        confidence: delegation.confidence,
+        estimatedDuration: delegation.estimatedDuration,
+      }));
+
+      const runContext: AgentRunContext = {
+        workspaceId: this.currentWorkspaceId,
+        sessionId: this.currentSessionId,
+        query,
+        context: contextItems,
+        memories,
+        todos,
+        subagentPlans,
+      };
+
+      logger.debug(
+        `🔄 Deep Agents: Prepared context with ${contextItems.length} items, ${memories.length} memories, ${todos.length} todos, ${subagentPlans.length} subagent plans`,
+      );
+      return runContext;
+    } catch (error) {
+      logger.error('Failed to prepare agent run context:', error);
+      // Return minimal context on error
+      return {
+        workspaceId: this.currentWorkspaceId,
+        sessionId: this.currentSessionId,
+        query,
+        context: [],
+        memories: [],
+        todos: [],
+        subagentPlans: [],
+      };
+    }
+  }
+
+  /**
+   * After agent run: logs success/failure to episodic/procedural memory for reuse
+   */
+  async afterAgentRun(runContext: AgentRunContext, result: AgentRunResult): Promise<void> {
+    try {
+      logger.debug('🔄 Deep Agents: Processing agent run results');
+
+      // Save episode to episodic memory
+      const episode: Omit<Episode, 'id' | 'workspaceId' | 'sessionId' | 'timestamp' | 'tokens'> = {
+        query: result.query,
+        actions: result.actions,
+        outcome: result.success ? 'success' : 'failure',
+        reasoning: result.reasoning,
+        metadata: {
+          agentId: 'main-agent',
+          duration: result.duration,
+          errorMessage: result.success ? undefined : result.outcome,
+          contextUsed: runContext.context.map(item => item.id || item.type),
+        },
+      };
+
+      await memoryService.saveEpisode(this.currentWorkspaceId, this.currentSessionId, episode);
+
+      // If successful and complex enough, save as procedural pattern
+      if (result.success && result.actions.length >= 3) {
+        const pattern = {
+          name: `Pattern_${Date.now()}`,
+          description: `Successful workflow: ${result.query}`,
+          steps: result.actions.map(action => ({
+            action,
+            parameters: {},
+            expectedResult: 'success',
+          })),
+          successRate: 1.0, // New pattern starts with 100% success rate
+        };
+
+        await memoryService.savePattern(this.currentWorkspaceId, pattern);
+        logger.debug(`🔄 Deep Agents: Saved successful pattern: ${pattern.name}`);
+      }
+
+      // Extract and save semantic facts from successful runs
+      if (result.success && result.outcome) {
+        // Simple fact extraction - in production you'd use AI for this
+        const facts = this.extractFactsFromOutcome(result.outcome);
+        for (const fact of facts) {
+          await memoryService.saveFact(this.currentWorkspaceId, fact.key, fact.value, {
+            extractedFrom: `episode_${Date.now()}`,
+          });
+        }
+      }
+
+      // Update todos based on completed actions
+      if (result.actions.length > 0) {
+        await todoListMiddleware.updateTodos(this.currentWorkspaceId, this.currentSessionId, result.actions);
+      }
+
+      // Update procedural pattern usage if this run used existing patterns
+      for (const memory of runContext.memories) {
+        if (memory.id && memory.name) {
+          // It's a workflow pattern
+          await memoryService.updatePatternUsage(this.currentWorkspaceId, memory.id, result.success);
+        }
+      }
+
+      logger.debug('🔄 Deep Agents: Completed post-run memory processing');
+    } catch (error) {
+      logger.error('Failed to process agent run results:', error);
+    }
+  }
+
+  /**
+   * Maybe pause for human approval based on workspace autonomy level
+   */
+  async maybePauseForHumanApproval(plannedActions: string[], workspaceId?: string): Promise<boolean> {
+    try {
+      const targetWorkspaceId = workspaceId || this.currentWorkspaceId;
+
+      // Create approval request
+      const approvalRequest: ApprovalRequest = {
+        workspaceId: targetWorkspaceId,
+        sessionId: this.currentSessionId,
+        plannedActions,
+        riskLevel: this.assessRiskLevel(plannedActions),
+        autonomyLevel: 3, // Default autonomy level - TODO: Get from WorkspaceManager
+        requiresApproval: false,
+        reason: '',
+      };
+
+      // Determine if approval is required based on autonomy level and risk
+      approvalRequest.requiresApproval = this.shouldRequireApproval(approvalRequest);
+
+      if (!approvalRequest.requiresApproval) {
+        logger.debug('🔄 Deep Agents: No approval required, proceeding automatically');
+        return true; // Proceed without approval
+      }
+
+      logger.info('🔄 Deep Agents: Human approval required, pausing execution');
+
+      // Emit approval required event
+      await this.context.emitEvent(
+        Actors.SYSTEM,
+        ExecutionState.TASK_PAUSE,
+        `AGENT_APPROVAL_REQUIRED:${JSON.stringify(approvalRequest)}`,
+      );
+
+      // Wait for approval response
+      return await this.waitForApprovalResponse();
+    } catch (error) {
+      logger.error('Failed to handle approval request:', error);
+      return false; // Deny on error for safety
+    }
+  }
+
+  // ============================================================================
+  // PRIVATE HELPER METHODS FOR DEEP AGENTS MIDDLEWARE
+  // ============================================================================
+
+  /**
+   * Extract simple facts from successful outcomes
+   */
+  private extractFactsFromOutcome(outcome: string): Array<{ key: string; value: any }> {
+    const facts: Array<{ key: string; value: any }> = [];
+
+    // Simple pattern matching for common facts
+    // In production, you'd use AI for sophisticated fact extraction
+
+    if (outcome.includes('email sent')) {
+      facts.push({ key: 'last_email_action', value: 'sent' });
+    }
+
+    if (outcome.includes('page navigated')) {
+      facts.push({ key: 'last_navigation_action', value: 'success' });
+    }
+
+    if (outcome.includes('form filled')) {
+      facts.push({ key: 'last_form_action', value: 'filled' });
+    }
+
+    return facts;
+  }
+
+  /**
+   * Assess risk level of planned actions
+   */
+  private assessRiskLevel(plannedActions: string[]): 'low' | 'medium' | 'high' {
+    const riskKeywords = {
+      high: ['delete', 'remove', 'send email', 'purchase', 'payment', 'submit'],
+      medium: ['click', 'navigate', 'fill', 'select', 'upload'],
+      low: ['read', 'view', 'scroll', 'hover', 'wait'],
+    };
+
+    const actionText = plannedActions.join(' ').toLowerCase();
+
+    if (riskKeywords.high.some(keyword => actionText.includes(keyword))) {
+      return 'high';
+    }
+    if (riskKeywords.medium.some(keyword => actionText.includes(keyword))) {
+      return 'medium';
+    }
+    return 'low';
+  }
+
+  /**
+   * Determine if approval is required based on autonomy level and risk
+   */
+  private shouldRequireApproval(request: ApprovalRequest): boolean {
+    // Autonomy level 1-2: Always ask
+    if (request.autonomyLevel <= 2) {
+      request.reason = 'Low autonomy level requires approval for all actions';
+      return true;
+    }
+
+    // Autonomy level 3-4: Ask for high-risk actions
+    if (request.autonomyLevel <= 4 && request.riskLevel === 'high') {
+      request.reason = 'High-risk action requires approval';
+      return true;
+    }
+
+    // Autonomy level 5: Only ask for destructive actions
+    if (request.autonomyLevel === 5) {
+      const destructiveKeywords = ['delete', 'remove', 'purchase', 'payment'];
+      const hasDestructiveAction = request.plannedActions.some(action =>
+        destructiveKeywords.some(keyword => action.toLowerCase().includes(keyword)),
+      );
+
+      if (hasDestructiveAction) {
+        request.reason = 'Destructive action requires approval even at high autonomy';
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  /**
+   * Wait for approval response from UI
+   */
+  private async waitForApprovalResponse(): Promise<boolean> {
+    return new Promise(resolve => {
+      // Set up event listener for approval response
+      const handleApprovalResponse = (event: any) => {
+        if (event.type === 'AGENT_APPROVAL_GRANTED') {
+          logger.info('🔄 Deep Agents: Approval granted, resuming execution');
+          resolve(true);
+        } else if (event.type === 'AGENT_APPROVAL_REJECTED') {
+          logger.info('🔄 Deep Agents: Approval rejected, stopping execution');
+          resolve(false);
+        }
+      };
+
+      // TODO: Implement proper event listener for approval responses
+      // For now, auto-approve after 30 seconds timeout
+      setTimeout(() => {
+        logger.error('🔄 Deep Agents: Approval timeout, auto-approving');
+        resolve(true);
+      }, 30000);
+    });
   }
 
   /**

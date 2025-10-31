@@ -32,7 +32,7 @@
 
 ### Phase 1: Storage & Memory Foundation
 
-- [ ] 1. Enhance Storage with LangGraph Store Backend
+- [x] 1. Enhance Storage with LangGraph Store Backend
   - **AUGMENTATION**: Add `runId` for branching/"time travel" and replay/inspect specific agent runs (LangGraph durable execution)
   - Create `packages/storage/lib/chat/LangGraphStore.ts` with namespace pattern `userId/workspaceId/threadId/runId`
   - Implement core Store API: `put()`, `get()`, `search()`, `delete()` with runId branching support
@@ -42,7 +42,7 @@
   - **Integration Points**: Chrome storage grouped by workspace/thread/run, plays with MessageManager and Executor
   - _Requirements: 1_
 
-- [ ] 1.1 Migration + Rollback with Checkpointing
+- [x] 1.1 Migration + Rollback with Checkpointing
   - **AUGMENTATION**: When restoring, treat checkpoint as new runId branch so we don't overwrite original thread
   - Create `packages/storage/lib/chat/StorageMigration.ts` implementing LangGraph checkpointing patterns
   - Add checkpoint creation: `createCheckpoint()`, `restoreCheckpoint()`, `listCheckpoints()` for conversation time-travel
@@ -52,7 +52,7 @@
   - **Why This Matters**: Deep agents need branching and rewind to debug and explore alternate outcomes
   - _Requirements: 1_
 
-- [ ] 2. ContextManager with 4 Pillars (CRITICAL)
+- [x] 2. ContextManager with 4 Pillars (CRITICAL)
   - **AUGMENTATION**: Add `agentId`/`sourceType` to track which subagent produced context (Deep Agents = planner + subagents)
   - **AUGMENTATION**: Add `getContextStats()` for Options > Context tab live breakdown
   - **AUGMENTATION**: Add `removeItem()` for AmbientMonitor and pills to delete context
@@ -65,7 +65,7 @@
   - **Integration Points**: Uses LangGraphStore, ChromeAIService, exposes clean API for MessageManager and Executor
   - _Requirements: 2_
 
-- [ ] 2.1 Extend MessageManager (Minimal Changes)
+- [x] 2.1 Extend MessageManager (Minimal Changes)
   - **AUGMENTATION**: Add `buildModelContext()` helper that prepares final prompt context from ContextManager
   - **AUGMENTATION**: Use `estimateTokenCount()` consistently throughout
   - Add 3-4 new methods to existing `chrome-extension/src/background/agent/messages/service.ts`
@@ -76,7 +76,7 @@
   - **Integration**: Single call for Executor to generate final prompt context, maintains backward compatibility
   - _Requirements: 11_
 
-- [ ] 3. Deep Agents Memory Services (THREE TYPES)
+- [x] 3. Deep Agents Memory Services (THREE TYPES)
   - **AUGMENTATION**: Add `getMemoryStats()`, `clearMemory()`, `deleteFact()` for Task 6 UI
   - **AUGMENTATION**: Track `usageCount` & `lastUsed` for procedural patterns to surface "best workflows"
   - Create `chrome-extension/src/services/memory/MemoryService.ts` with three memory types
@@ -88,7 +88,7 @@
   - **Why Three Types**: Maps to Deep Agents' split between short-term working memory and long-term skill library
   - _Requirements: 3_
 
-- [ ] 3.1 Extend Executor with Deep Agents Middleware
+- [x] 3.1 Extend Executor with Deep Agents Middleware
   - **AUGMENTATION**: Add subagent planning hook (delegation to "research agent", "writer agent", etc.)
   - **AUGMENTATION**: Add human approval checkpoints based on workspace autonomyLevel (LangGraph interrupts)
   - **AUGMENTATION**: Document Executor as "Deep Agent Harness"
@@ -100,7 +100,7 @@
   - **Integration**: Matches LangGraph "interrupts"/human-in-the-loop and Deep Agents' planner/subagent handoff
   - _Requirements: 12_
 
-- [ ] 3.2 TodoList Middleware (Deep Agents Planning)
+- [x] 3.2 TodoList Middleware (Deep Agents Planning)
   - **AUGMENTATION**: Add `SubagentService` stub for planning + delegation logic co-location
   - **AUGMENTATION**: Subagents = "research", "writer", etc. - each gets slice of plan (Deep Agents scaling pattern)
   - Create `chrome-extension/src/background/agent/middleware/TodoList.ts` implementing Deep Agents TodoList pattern
@@ -111,7 +111,7 @@
   - **Integration**: Literally the Deep Agents pattern (planner breaks work into explicit subtasks for helper agents)
   - _Requirements: 4_
 
-- [ ] 3.2.1 SubagentService Implementation (CRITICAL - CURRENTLY STUB)
+- [x] 3.2.1 SubagentService Implementation (CRITICAL - CURRENTLY STUB)
   - **CRITICAL**: Replace placeholder `return []` with actual delegation logic
   - Implement `SubagentService.planDelegations()` using `ChromeAIService.classifyTaskType()`
   - **Task Classification**: 'research' → research agent, 'drafting' → writer agent, 'calendar' → calendar agent
@@ -123,7 +123,7 @@
 
 ### Phase 2: Visual Context Engineering UI
 
-- [ ] 4. WorkspaceManager + AutonomyController
+- [x] 4. WorkspaceManager + AutonomyController
   - **AUGMENTATION**: Add `getWorkspace()` for Executor + AmbientMonitor integration
   - **AUGMENTATION**: Document autonomyLevel and approvalPolicies as human-in-the-loop gate
   - Create `chrome-extension/src/services/workspace/WorkspaceManager.ts` for workspace lifecycle management
@@ -134,7 +134,7 @@
   - Add cross-workspace synthesis capabilities with controlled sharing and user consent
   - _Requirements: 5_
 
-- [ ] 4.1 Workspace Tabs in SidePanel (LEVERAGE EXISTING UI)
+- [x] 4.1 Workspace Tabs in SidePanel (LEVERAGE EXISTING UI)
   - **AUGMENTATION**: Show autonomy badge color next to workspace switcher so user always knows safety mode
   - Add workspace switcher to existing `pages/side-panel/src/SidePanel.tsx` header
   - Create `WorkspaceSwitcher` component with dropdown showing workspaces, token usage, last activity
@@ -144,7 +144,7 @@
   - **Integration**: Maintains existing Shannon header design while adding workspace + autonomy awareness
   - _Requirements: 10_
 
-- [ ] 4.2 ApprovalModal Component (CRITICAL - MISSING)
+- [x] 4.2 ApprovalModal Component (CRITICAL - MISSING)
   - **CRITICAL**: Create UI component to handle `AGENT_APPROVAL_REQUIRED` messages from Executor
   - Create `pages/side-panel/src/components/ApprovalModal.tsx` for human-in-the-loop UI
   - Listen for `AGENT_APPROVAL_REQUIRED` messages and display planned actions in modal
@@ -155,7 +155,7 @@
   - **Visual Design**: Warning colors for low autonomy, info colors for confirmations
   - _Requirements: 5, 12_
 
-- [ ] 4.3 Session Management in WorkspaceManager (CRITICAL - UNDEFINED)
+- [x] 4.3 Session Management in WorkspaceManager (CRITICAL - UNDEFINED)
   - **CRITICAL**: Resolve "sessionId TBD" references throughout Tasks 1, 2.1, 3, 6.1
   - Add `getActiveSession(workspaceId)` method to WorkspaceManager
   - Auto-generate sessionId on first message per workspace using timestamp + random
@@ -165,7 +165,7 @@
   - **Why Critical**: Multiple tasks reference sessionId but no task explains how to get it
   - _Requirements: 5_
 
-- [ ] 5. Visual Context Builder with @-Autocomplete
+- [x] 5. Visual Context Builder with @-Autocomplete
   - **AUGMENTATION**: Add `agentId` to pills so we can see which subagent contributed context (Research Agent vs Main Agent)
   - **AUGMENTATION**: Persist pill reordering back into ContextManager priority
   - **AUGMENTATION**: Include SuggestedPills (AmbientMonitor) inline
@@ -177,7 +177,7 @@
   - **Visual Design**: Use current dark theme + teal accents, show agentId badges for subagent attribution
   - _Requirements: 6_
 
-- [ ] 5.1 @-Autocomplete System
+- [x] 5.1 @-Autocomplete System
   - **AUGMENTATION**: Add `@agent:*` options so user can explicitly pull in subagent results ("@agent:research")
   - **AUGMENTATION**: When user selects subagent option, create pill with agentId
   - Enhance existing `pages/side-panel/src/components/ChatInput.tsx` with @-mention system
@@ -188,7 +188,7 @@
   - **Pattern**: @page:0, @active, @gmail, @memory[key], @agent:research, @agent:writer
   - _Requirements: 6_
 
-- [ ] 6. Extend Options Page with Memory & Context Tabs
+- [x] 6. Extend Options Page with Memory & Context Tabs
   - **AUGMENTATION**: MemorySettings uses new MemoryService methods: getMemoryStats, clearMemory, deleteFact, listPatterns
   - **AUGMENTATION**: Add clear explanation of Episodic/Semantic/Procedural aligned with Deep Agents memory model
   - **AUGMENTATION**: ContextSettings uses ContextManager.getContextStats()
@@ -200,7 +200,7 @@
   - **Integration**: Uses ContextManager.getContextStats() for live breakdown and token visualization
   - _Requirements: 9_
 
-- [ ] 6.1 CompressionControls with Visual Preview
+- [x] 6.1 CompressionControls with Visual Preview
   - **AUGMENTATION**: Before applying compression, create checkpoint via StorageMigration.createCheckpoint() for time-travel
   - **AUGMENTATION**: Use MessageManager.estimateTokenCount consistently
   - Create `pages/options/src/components/CompressionPreviewModal.tsx` for before/after compression preview

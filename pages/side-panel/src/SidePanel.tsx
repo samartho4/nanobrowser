@@ -6,6 +6,8 @@ import { PiPlusBold } from 'react-icons/pi';
 import { GrHistory } from 'react-icons/gr';
 import { type Message, Actors, chatHistoryStore, agentModelStore, generalSettingsStore } from '@extension/storage';
 import favoritesStorage, { type FavoritePrompt } from '@extension/storage/lib/prompt/favorites';
+import { ThemeProvider, useTheme } from '@extension/shared';
+import '@extension/shared/lib/styles/theme.css';
 import { t } from '@extension/i18n';
 import MessageList from './components/MessageList';
 import ChatInput from './components/ChatInput';
@@ -15,6 +17,12 @@ import StatusChip from './components/StatusChip';
 import { GmailSidePanel } from './components/GmailSidePanel';
 // import { PageCaptureTest } from './components/PageCaptureTest'; // COMMENTED OUT
 import { MultimodalTestComponent } from './components/MultimodalTest';
+import { CreateWorkspaceModal } from './components/CreateWorkspaceModal';
+import { ApprovalModal } from './components/ApprovalModal';
+import { WorkspaceSwitcher } from './components/WorkspaceSwitcher';
+import { AutonomyBadge } from './components/AutonomyBadge';
+// import ContextPills from './components/ContextPills'; // Temporarily disabled
+
 import { EventType, type AgentEvent, ExecutionState } from './types/event';
 import './SidePanel.css';
 
@@ -25,7 +33,7 @@ declare global {
   }
 }
 
-const SidePanel = () => {
+const SidePanelContent = () => {
   const progressMessage = 'Showing progress...';
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputEnabled, setInputEnabled] = useState(true);
@@ -37,13 +45,17 @@ const SidePanel = () => {
   const [chatSessions, setChatSessions] = useState<Array<{ id: string; title: string; createdAt: number }>>([]);
   const [isFollowUpMode, setIsFollowUpMode] = useState(false);
   const [isHistoricalSession, setIsHistoricalSession] = useState(false);
-  const [isDarkMode, setIsDarkMode] = useState(false);
+  const { isDarkMode } = useTheme();
   const [favoritePrompts, setFavoritePrompts] = useState<FavoritePrompt[]>([]);
   const [hasConfiguredModels, setHasConfiguredModels] = useState<boolean | null>(null); // null = loading, false = no models, true = has models
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessingSpeech, setIsProcessingSpeech] = useState(false);
   const [isReplaying, setIsReplaying] = useState(false);
   const [replayEnabled, setReplayEnabled] = useState(false);
+  const [showCreateWorkspaceModal, setShowCreateWorkspaceModal] = useState(false);
+  const [currentWorkspaceId, setCurrentWorkspaceId] = useState<string>('default');
+  const [currentAutonomyLevel, setCurrentAutonomyLevel] = useState<number>(3);
+
   const sessionIdRef = useRef<string | null>(null);
   const isReplayingRef = useRef<boolean>(false);
   const portRef = useRef<chrome.runtime.Port | null>(null);
@@ -54,18 +66,7 @@ const SidePanel = () => {
   const audioChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<number | null>(null);
 
-  // Check for dark mode preference
-  useEffect(() => {
-    const darkModeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    setIsDarkMode(darkModeMediaQuery.matches);
-
-    const handleChange = (e: MediaQueryListEvent) => {
-      setIsDarkMode(e.matches);
-    };
-
-    darkModeMediaQuery.addEventListener('change', handleChange);
-    return () => darkModeMediaQuery.removeEventListener('change', handleChange);
-  }, []);
+  // Theme is now managed by ThemeProvider
 
   // Check if models are configured
   const checkModelConfiguration = useCallback(async () => {
@@ -92,11 +93,46 @@ const SidePanel = () => {
     }
   }, []);
 
+  // Load current workspace info
+  const loadCurrentWorkspace = useCallback(async () => {
+    try {
+      const { workspaceManager } = await import('@extension/storage');
+      const activeWorkspaceId = workspaceManager.getActiveWorkspaceId();
+      const workspace = await workspaceManager.getActiveWorkspace();
+
+      setCurrentWorkspaceId(activeWorkspaceId);
+      setCurrentAutonomyLevel(workspace?.autonomyLevel || 3);
+    } catch (error) {
+      console.error('Error loading current workspace:', error);
+    }
+  }, []);
+
+  // Handle workspace change
+  const handleWorkspaceChange = useCallback(async (workspaceId: string) => {
+    try {
+      const { workspaceManager } = await import('@extension/storage');
+      const workspace = await workspaceManager.getWorkspace(workspaceId);
+
+      setCurrentWorkspaceId(workspaceId);
+      setCurrentAutonomyLevel(workspace?.autonomyLevel || 3);
+
+      // Clear current session when switching workspaces
+      setMessages([]);
+      setCurrentSessionId(null);
+      sessionIdRef.current = null;
+      setIsFollowUpMode(false);
+      setIsHistoricalSession(false);
+    } catch (error) {
+      console.error('Error handling workspace change:', error);
+    }
+  }, []);
+
   // Check model configuration on mount
   useEffect(() => {
     checkModelConfiguration();
     loadGeneralSettings();
-  }, [checkModelConfiguration, loadGeneralSettings]);
+    loadCurrentWorkspace();
+  }, [checkModelConfiguration, loadGeneralSettings, loadCurrentWorkspace]);
 
   // Re-check model configuration when the side panel becomes visible again
   useEffect(() => {
@@ -131,7 +167,7 @@ const SidePanel = () => {
     isReplayingRef.current = isReplaying;
   }, [isReplaying]);
 
-  const appendMessage = useCallback((newMessage: Message, sessionId?: string | null) => {
+  const appendMessage = useCallback(async (newMessage: Message, sessionId?: string | null) => {
     // Don't save progress messages
     const isProgressMessage = newMessage.content === progressMessage;
 
@@ -563,6 +599,40 @@ const SidePanel = () => {
 
     if (!trimmedText) return;
 
+    // DEMO ENHANCEMENT: Handle @-mentions for context discovery
+    if (trimmedText.includes('@gmail')) {
+      // Simulate Gmail context discovery with realistic demo data
+      appendMessage({
+        actor: Actors.SYSTEM,
+        content: '🔍 Discovering Gmail context...',
+        timestamp: Date.now(),
+      });
+
+      setTimeout(() => {
+        appendMessage({
+          actor: Actors.SYSTEM,
+          content: `📧 **Gmail Context Discovered:**
+• 8 unread emails (3 urgent, 2 time-sensitive)
+• 3 calendar conflicts requiring resolution
+• 15-message thread from Marketing team
+• 2 client emails overdue for response
+
+🧠 **Memory Insights:**
+• You usually reply to John Smith (CEO) within 2 hours
+• Finance emails typically handled before 10am
+• Marketing threads often need decision summaries
+
+💡 **Recommendation:** Create "Email Triage" workspace with Gmail + Calendar integration?`,
+          timestamp: Date.now(),
+        });
+      }, 2000);
+
+      // Auto-suggest workspace creation with template
+      setTimeout(() => {
+        setShowCreateWorkspaceModal(true);
+      }, 4000);
+    }
+
     // Check if the input is a command (starts with /)
     if (trimmedText.startsWith('/')) {
       // Process command and return if it was handled
@@ -623,8 +693,9 @@ const SidePanel = () => {
           task: text,
           taskId: sessionIdRef.current,
           tabId,
+          workspaceId: currentWorkspaceId, // DEEP AGENTS: Include workspace context
         });
-        console.log('follow_up_task sent', text, tabId, sessionIdRef.current);
+        console.log('follow_up_task sent', text, tabId, sessionIdRef.current, 'workspace:', currentWorkspaceId);
       } else {
         // Send as new task
         await sendMessage({
@@ -632,8 +703,9 @@ const SidePanel = () => {
           task: text,
           taskId: sessionIdRef.current,
           tabId,
+          workspaceId: currentWorkspaceId, // DEEP AGENTS: Include workspace context
         });
-        console.log('new_task sent', text, tabId, sessionIdRef.current);
+        console.log('new_task sent', text, tabId, sessionIdRef.current, 'workspace:', currentWorkspaceId);
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
@@ -1008,7 +1080,9 @@ const SidePanel = () => {
   return (
     <div>
       <div
-        className={`flex h-screen flex-col ${isDarkMode ? 'bg-slate-900' : "bg-[url('/bg.jpg')] bg-cover bg-no-repeat"} overflow-hidden border ${isDarkMode ? 'border-sky-800' : 'border-[rgb(186,230,253)]'} rounded-2xl`}>
+        className={`flex h-screen flex-col overflow-hidden border rounded-2xl transition-colors duration-200 ${
+          isDarkMode ? 'bg-slate-900 border-sky-800' : 'bg-gradient-to-br from-white to-blue-50 border-blue-200'
+        }`}>
         <header className="header relative">
           <div className="header-logo">
             {showHistory ? (
@@ -1020,7 +1094,10 @@ const SidePanel = () => {
                 {t('nav_back')}
               </button>
             ) : (
-              <img src="/icon-128.png" alt="Extension Logo" className="size-6" />
+              <div className="flex items-center space-x-2">
+                <img src="/icon-128.png" alt="Extension Logo" className="size-6" />
+                <AutonomyBadge level={currentAutonomyLevel} size="sm" />
+              </div>
             )}
           </div>
           {!showHistory && <StatusChip />}
@@ -1106,6 +1183,24 @@ const SidePanel = () => {
           </div>
         ) : (
           <>
+            {/* Workspace Switcher - ALWAYS SHOW FOR TESTING */}
+            {!showHistory && (
+              <div className={`border-b ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} p-3`}>
+                <WorkspaceSwitcher onWorkspaceChange={handleWorkspaceChange} />
+              </div>
+            )}
+
+            {/* Context Pills - Temporarily disabled for debugging */}
+            {/* {!showHistory && hasConfiguredModels === true && (
+              <div className={`border-b ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} p-2`}>
+                <ContextPills 
+                  workspaceId={currentWorkspaceId}
+                  pills={[]}
+                  isDarkMode={isDarkMode}
+                />
+              </div>
+            )} */}
+
             {/* Show loading state while checking model configuration */}
             {hasConfiguredModels === null && (
               <div
@@ -1160,6 +1255,19 @@ const SidePanel = () => {
               <>
                 {messages.length === 0 && (
                   <>
+                    {/* New Workspace Button */}
+                    <div className={`border-t ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} p-3`}>
+                      <button
+                        onClick={() => setShowCreateWorkspaceModal(true)}
+                        className={`w-full flex items-center justify-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+                          isDarkMode
+                            ? 'bg-teal-600 hover:bg-teal-500 text-white'
+                            : 'bg-teal-500 hover:bg-teal-600 text-white'
+                        }`}>
+                        <span>🏢</span>
+                        <span className="font-medium">New Workspace</span>
+                      </button>
+                    </div>
                     <div
                       className={`border-t ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} mb-2 p-2 shadow-sm backdrop-blur-sm`}>
                       <ChatInput
@@ -1206,31 +1314,67 @@ const SidePanel = () => {
                   </div>
                 )}
                 {messages.length > 0 && (
-                  <div
-                    className={`border-t ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} p-2 shadow-sm backdrop-blur-sm`}>
-                    <ChatInput
-                      onSendMessage={handleSendMessage}
-                      onStopTask={handleStopTask}
-                      onMicClick={handleMicClick}
-                      isRecording={isRecording}
-                      isProcessingSpeech={isProcessingSpeech}
-                      disabled={!inputEnabled || isHistoricalSession}
-                      showStopButton={showStopButton}
-                      setContent={setter => {
-                        setInputTextRef.current = setter;
-                      }}
-                      isDarkMode={isDarkMode}
-                      historicalSessionId={isHistoricalSession && replayEnabled ? currentSessionId : null}
-                      onReplay={handleReplay}
-                    />
-                  </div>
+                  <>
+                    {/* New Workspace Button */}
+                    <div className={`border-t ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} p-3`}>
+                      <button
+                        onClick={() => setShowCreateWorkspaceModal(true)}
+                        className={`w-full flex items-center justify-center space-x-2 px-4 py-2 rounded-lg transition-colors ${
+                          isDarkMode
+                            ? 'bg-teal-600 hover:bg-teal-500 text-white'
+                            : 'bg-teal-500 hover:bg-teal-600 text-white'
+                        }`}>
+                        <span>🏢</span>
+                        <span className="font-medium">New Workspace</span>
+                      </button>
+                    </div>
+                    <div
+                      className={`border-t ${isDarkMode ? 'border-sky-900' : 'border-sky-100'} p-2 shadow-sm backdrop-blur-sm`}>
+                      <ChatInput
+                        onSendMessage={handleSendMessage}
+                        onStopTask={handleStopTask}
+                        onMicClick={handleMicClick}
+                        isRecording={isRecording}
+                        isProcessingSpeech={isProcessingSpeech}
+                        disabled={!inputEnabled || isHistoricalSession}
+                        showStopButton={showStopButton}
+                        setContent={setter => {
+                          setInputTextRef.current = setter;
+                        }}
+                        isDarkMode={isDarkMode}
+                        historicalSessionId={isHistoricalSession && replayEnabled ? currentSessionId : null}
+                        onReplay={handleReplay}
+                      />
+                    </div>
+                  </>
                 )}
               </>
             )}
           </>
         )}
       </div>
+
+      {/* Create Workspace Modal */}
+      <CreateWorkspaceModal
+        isOpen={showCreateWorkspaceModal}
+        onClose={() => setShowCreateWorkspaceModal(false)}
+        onWorkspaceCreated={workspaceId => {
+          console.log('New workspace created:', workspaceId);
+          setShowCreateWorkspaceModal(false);
+        }}
+      />
+
+      {/* Approval Modal */}
+      <ApprovalModal isDarkMode={isDarkMode} />
     </div>
+  );
+};
+
+const SidePanel = () => {
+  return (
+    <ThemeProvider>
+      <SidePanelContent />
+    </ThemeProvider>
   );
 };
 

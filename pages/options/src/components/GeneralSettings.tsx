@@ -1,12 +1,41 @@
 import { useState, useEffect } from 'react';
 import { type GeneralSettingsConfig, generalSettingsStore, DEFAULT_GENERAL_SETTINGS } from '@extension/storage';
+import { useTheme } from '@extension/shared';
 import { t } from '@extension/i18n';
 
 interface GeneralSettingsProps {
   isDarkMode?: boolean;
 }
 
-export const GeneralSettings = ({ isDarkMode = false }: GeneralSettingsProps) => {
+const ThemeToggleButton = () => {
+  const { theme, toggleTheme, isDarkMode } = useTheme();
+
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        onClick={toggleTheme}
+        className={`
+          w-10 h-10 flex items-center justify-center rounded-full
+          transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2
+          ${
+            theme === 'light'
+              ? 'bg-blue-100 text-blue-600 hover:bg-blue-200 focus:ring-blue-500'
+              : 'bg-slate-700 text-yellow-400 hover:bg-slate-600 focus:ring-yellow-500'
+          }
+        `}
+        title={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}
+        aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} theme`}>
+        {theme === 'light' ? '🌙' : '☀️'}
+      </button>
+      <span className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+        {theme === 'light' ? 'Light' : 'Dark'} Theme
+      </span>
+    </div>
+  );
+};
+
+export const GeneralSettings = ({ isDarkMode: _deprecated }: GeneralSettingsProps) => {
+  const { isDarkMode } = useTheme();
   const [settings, setSettings] = useState<GeneralSettingsConfig>(DEFAULT_GENERAL_SETTINGS);
 
   useEffect(() => {
@@ -36,6 +65,16 @@ export const GeneralSettings = ({ isDarkMode = false }: GeneralSettingsProps) =>
         </h2>
 
         <div className="space-y-4">
+          {/* Theme Toggle Section */}
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className={`text-base font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Theme</h3>
+              <p className={`text-sm font-normal ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                Choose between light and dark theme for the extension interface
+              </p>
+            </div>
+            <ThemeToggleButton />
+          </div>
           <div className="flex items-center justify-between">
             <div>
               <h3 className={`text-base font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>

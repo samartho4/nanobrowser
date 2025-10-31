@@ -13,6 +13,7 @@ import { HybridAIClient } from './llm/HybridAIClient';
 import { handleDOMCaptureMessage } from './handlers/dom-capture-handler';
 import { handleTestMultimodal } from './handlers/multimodal-test-handler';
 import { handleGmailMessage, cleanupGmailService } from './toolHandlers/gmailHandler';
+// import { handleWorkspaceMemoryMessage } from './handlers/workspace-memory-handler'; // Replaced with isolated Gmail handler
 
 const logger = createLogger('background');
 
@@ -73,6 +74,17 @@ analyticsSettingsStore.subscribe(() => {
     logger.error('Failed to update analytics settings:', error);
   });
 });
+
+// Helper function to get target reduction based on strategy
+const getTargetReduction = (strategy: string): number => {
+  const reductions = {
+    aggressive: 70,
+    balanced: 50,
+    conservative: 30,
+    semantic: 60,
+  };
+  return reductions[strategy as keyof typeof reductions] || 50;
+};
 
 // Listen for simple messages (e.g., from options page, side panel)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -147,6 +159,709 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Indicates async response
   }
 
+  // Handle workspace memory requests using task queue to prevent timeouts
+  if (
+    [
+      'GET_WORKSPACE_MEMORY_STATS',
+      'CLEAR_WORKSPACE_MEMORY',
+      'SYNC_GMAIL_MEMORY',
+      'AUTHENTICATE_GMAIL',
+      'DISCONNECT_GMAIL',
+      'GET_EMAILS_BY_MEMORY_TYPE',
+    ].includes(message.type)
+  ) {
+    (async () => {
+      try {
+        const { gmailTaskQueue } = await import('./services/gmail-task-queue');
+        logger.info(`Handling workspace memory message: ${message.type}`);
+
+        const workspaceId = message.payload?.workspaceId || 'default';
+
+        if (message.type === 'GET_WORKSPACE_MEMORY_STATS') {
+          const taskId = gmailTaskQueue.addTask('GET_STATS', workspaceId);
+          sendResponse({
+            success: true,
+            taskId,
+            message: 'Memory stats task queued - use GET_TASK_STATUS to check progress',
+          });
+        } else if (message.type === 'SYNC_GMAIL_MEMORY') {
+          const taskId = gmailTaskQueue.addTask('SYNC_MEMORY', workspaceId, {
+            maxMessages: message.payload?.maxMessages || 50,
+            daysBack: message.payload?.daysBack || 7,
+            forceRefresh: message.payload?.forceRefresh || false,
+          });
+          sendResponse({
+            success: true,
+            taskId,
+            message: 'Gmail sync task queued - use GET_TASK_STATUS to check progress',
+          });
+        } else if (message.type === 'AUTHENTICATE_GMAIL') {
+          const taskId = gmailTaskQueue.addTask('AUTHENTICATE', workspaceId);
+          sendResponse({
+            success: true,
+            taskId,
+            message: 'Authentication task queued - use GET_TASK_STATUS to check progress',
+          });
+        } else if (message.type === 'CLEAR_WORKSPACE_MEMORY') {
+          // This is a quick operation, handle immediately
+          const { clearWorkspaceMemory } = await import('./services/gmail-memory-handler');
+          const memoryType = message.payload?.memoryType;
+          const result = await clearWorkspaceMemory(workspaceId, memoryType);
+          sendResponse({
+            success: result.success,
+            data: result,
+            error: result.error,
+          });
+        } else if (message.type === 'GET_EMAILS_BY_MEMORY_TYPE') {
+          const taskId = gmailTaskQueue.addTask('GET_EMAILS', workspaceId, {
+            memoryType: message.payload?.memoryType,
+          });
+          sendResponse({
+            success: true,
+            taskId,
+            message: 'Email fetch task queued - use GET_TASK_STATUS to check progress',
+          });
+        } else {
+          sendResponse({
+            success: true,
+            data: { message: `${message.type} completed successfully` },
+          });
+        }
+      } catch (error) {
+        logger.error('Error in workspace memory handler:', error);
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    })();
+    return true; // Indicates async response
+  }
+
+  // Handle task status requests
+  if (message.type === 'GET_TASK_STATUS') {
+    (async () => {
+      try {
+        const { gmailTaskQueue } = await import('./services/gmail-task-queue');
+        const taskId = message.payload?.taskId;
+
+        if (!taskId) {
+          sendResponse({
+            success: false,
+            error: 'Task ID is required',
+          });
+          return;
+        }
+
+        const task = gmailTaskQueue.getTask(taskId);
+        if (!task) {
+          sendResponse({
+            success: false,
+            error: 'Task not found',
+          });
+          return;
+        }
+
+        sendResponse({
+          success: true,
+          task: {
+            id: task.id,
+            type: task.type,
+            status: task.status,
+            progress: task.progress,
+            result: task.result,
+            error: task.error,
+            startTime: task.startTime,
+            endTime: task.endTime,
+          },
+        });
+      } catch (error) {
+        logger.error('Error getting task status:', error);
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    })();
+    return true;
+  }
+
+  // Handle workspace task list requests
+  if (message.type === 'GET_WORKSPACE_TASKS') {
+    (async () => {
+      try {
+        const { gmailTaskQueue } = await import('./services/gmail-task-queue');
+        const workspaceId = message.payload?.workspaceId || 'default';
+
+        const tasks = gmailTaskQueue.getWorkspaceTasks(workspaceId);
+        sendResponse({
+          success: true,
+          tasks: tasks.map(task => ({
+            id: task.id,
+            type: task.type,
+            status: task.status,
+            progress: task.progress,
+            startTime: task.startTime,
+            endTime: task.endTime,
+          })),
+        });
+      } catch (error) {
+        logger.error('Error getting workspace tasks:', error);
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    })();
+    return true;
+  }
+
+  // Handle ContextManager UI requests
+  if (message.type === 'GET_CONTEXT_STATS') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const workspaceId = message.payload?.workspaceId || 'work-workspace';
+        const stats = await contextManager.getContextStats(workspaceId);
+        sendResponse({ ok: true, stats });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to get context stats',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'TEST_CONTEXT_WRITE') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId, contextItem } = message.payload;
+
+        await contextManager.write(workspaceId, contextItem, 'episodic');
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'WRITE test failed',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'TEST_CONTEXT_SELECT') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId, query, tokenLimit, options } = message.payload;
+
+        const items = await contextManager.select(workspaceId, query, tokenLimit, options);
+        sendResponse({ ok: true, items });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'SELECT test failed',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'TEST_CONTEXT_COMPRESS') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { items, strategy, targetTokens } = message.payload;
+
+        const strategyObj = {
+          name: strategy,
+          description: `${strategy} compression strategy`,
+          targetRatio: strategy === 'minimal' ? 0.8 : strategy === 'balanced' ? 0.5 : 0.3,
+        };
+
+        const result = await contextManager.compress(items, strategyObj, targetTokens);
+        sendResponse({ ok: true, result });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'COMPRESS test failed',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'TEST_CONTEXT_ISOLATE') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId } = message.payload;
+
+        const workspace = await contextManager.isolate(workspaceId);
+        sendResponse({ ok: true, workspace });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'ISOLATE test failed',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'REMOVE_CONTEXT_ITEM') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId, itemId } = message.payload;
+
+        await contextManager.removeItem(workspaceId, itemId);
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to remove context item',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'GET_CONTEXT_PILLS') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId } = message.payload;
+
+        // Get context items and convert to pills format
+        const contextItems = await contextManager.select(workspaceId, '', 10000, {});
+        const pills = contextItems.map(item => ({
+          id: item.id,
+          type: item.type,
+          label: `${item.type}: ${item.content.substring(0, 30)}...`,
+          tokens: item.metadata.tokens,
+          removable: true,
+          priority: item.metadata.priority,
+          agentId: item.agentId,
+          sourceType: item.sourceType,
+          preview: item.content.substring(0, 100) + '...',
+        }));
+
+        sendResponse({ ok: true, pills });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to get context pills',
+        });
+      }
+    })();
+    return true;
+  }
+
+  // Handle compression stats requests
+  if (message.type === 'GET_COMPRESSION_STATS') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId } = message.payload;
+
+        // Get compression statistics from context manager
+        const stats = await contextManager.getCompressionStats(workspaceId);
+
+        sendResponse({
+          success: true,
+          stats: {
+            totalItems: stats.totalItems || 0,
+            totalTokens: stats.totalTokens || 0,
+            compressedItems: stats.compressedItems || 0,
+            compressedTokens: stats.compressedTokens || 0,
+            compressionRatio: stats.compressionRatio || 0,
+            lastCompression: stats.lastCompression || 0,
+            isCompressing: stats.isCompressing || false,
+          },
+        });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get compression stats',
+        });
+      }
+    })();
+    return true;
+  }
+
+  // Handle workspace context compression
+  if (message.type === 'COMPRESS_WORKSPACE_CONTEXT') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId, strategy, targetTokens, preserveRecent, preserveImportant } = message.payload;
+
+        // Get all context items for the workspace
+        const items = await contextManager.select(workspaceId, '', 50000, {
+          includeMetadata: true,
+          sortBy: 'timestamp',
+          sortOrder: 'desc',
+        });
+
+        if (items.length === 0) {
+          throw new Error('No context items found for compression');
+        }
+
+        // Create compression strategy object
+        const compressionStrategy = {
+          name: strategy,
+          description: `${strategy} compression strategy`,
+          targetRatio: getTargetReduction(strategy) / 100,
+        };
+
+        // Perform compression
+        const compressionResult = await contextManager.compress(items, compressionStrategy, targetTokens);
+
+        // Apply compression results (remove compressed items)
+        if (compressionResult.itemsToRemove && compressionResult.itemsToRemove.length > 0) {
+          for (const itemId of compressionResult.itemsToRemove) {
+            await contextManager.removeItem(workspaceId, itemId);
+          }
+
+          // Update compression statistics
+          await contextManager.updateCompressionStats(workspaceId, {
+            compressedItems: compressionResult.itemsRemoved,
+            compressedTokens: compressionResult.tokensRemoved,
+            compressionRatio: compressionResult.compressionRatio * 100,
+            isCompressing: false,
+          });
+        }
+
+        sendResponse({
+          success: true,
+          result: compressionResult,
+        });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Compression failed',
+        });
+      }
+    })();
+    return true;
+  }
+
+  // Handle auto-compression settings
+  if (message.type === 'SET_AUTO_COMPRESSION') {
+    (async () => {
+      try {
+        const { workspaceId, enabled, strategy, targetTokens } = message.payload;
+
+        // Store auto-compression settings
+        const settings = {
+          enabled,
+          strategy,
+          targetTokens,
+          workspaceId,
+        };
+
+        await chrome.storage.local.set({
+          [`autoCompression_${workspaceId}`]: settings,
+        });
+
+        sendResponse({
+          success: true,
+          settings,
+        });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to set auto-compression',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'GET_CONTEXT_SUGGESTIONS') {
+    (async () => {
+      try {
+        // Generate mock suggestions for now - in production this would come from AmbientMonitor
+        const suggestions = [
+          {
+            id: 'suggestion-page',
+            type: 'page',
+            label: '@page',
+            tokens: 450,
+            reason: 'Current page has relevant content',
+            confidence: 0.8,
+            preview: 'Include visible content from current page',
+          },
+          {
+            id: 'suggestion-research',
+            type: 'message',
+            label: '@agent:research',
+            tokens: 320,
+            reason: 'Research agent has relevant findings',
+            confidence: 0.9,
+            preview: 'Include results from research subagent',
+            agentId: 'research-agent',
+          },
+        ];
+
+        sendResponse({ ok: true, suggestions });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to get context suggestions',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'UPDATE_PILL_PRIORITIES') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId, priorities } = message.payload;
+
+        await contextManager.updatePillPriorities(workspaceId, priorities);
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to update pill priorities',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'ACCEPT_CONTEXT_SUGGESTION') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { workspaceId, suggestion } = message.payload;
+
+        // Convert suggestion to context item and write it
+        const contextItem = {
+          type: suggestion.type,
+          content: suggestion.preview || suggestion.label,
+          agentId: suggestion.agentId,
+          sourceType: suggestion.sourceType || 'main',
+          metadata: {
+            source: 'user-suggestion',
+            priority: suggestion.priority || 3,
+          },
+        };
+
+        await contextManager.write(workspaceId, contextItem, 'episodic');
+        sendResponse({ ok: true });
+      } catch (error) {
+        sendResponse({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to accept suggestion',
+        });
+      }
+    })();
+    return true;
+  }
+
+  // Handle Memory Service requests from Options page
+  if (message.type === 'GET_MEMORY_STATS') {
+    (async () => {
+      try {
+        const { memoryService } = await import('../services/memory/MemoryService');
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const stats = await memoryService.getMemoryStats(workspaceId);
+        sendResponse({ success: true, data: stats });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get memory stats',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'LIST_PATTERNS') {
+    (async () => {
+      try {
+        const { memoryService } = await import('../services/memory/MemoryService');
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const patterns = await memoryService.listPatterns(workspaceId);
+        sendResponse({ success: true, data: patterns });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to list patterns',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CLEAR_MEMORY') {
+    (async () => {
+      try {
+        const { memoryService } = await import('../services/memory/MemoryService');
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const memoryType = message.payload?.memoryType;
+        await memoryService.clearMemory(workspaceId, memoryType);
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to clear memory',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'DELETE_FACT') {
+    (async () => {
+      try {
+        const { memoryService } = await import('../services/memory/MemoryService');
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const factId = message.payload?.factId;
+        await memoryService.deleteFact(workspaceId, factId);
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to delete fact',
+        });
+      }
+    })();
+    return true;
+  }
+
+  // Handle Context Manager requests from Options page
+  if (message.type === 'GET_CONTEXT_STATS') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const stats = await contextManager.getContextStats(workspaceId);
+        sendResponse({ success: true, data: stats });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to get context stats',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'SELECT_CONTEXT') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const { query, tokenLimit, options } = message.payload;
+        const items = await contextManager.select(workspaceId, query, tokenLimit, options);
+        sendResponse({ success: true, data: items });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to select context',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'COMPRESS_CONTEXT') {
+    (async () => {
+      try {
+        const { contextManager } = await import('../services/context/ContextManager');
+        const { items, strategy, targetTokens } = message.payload;
+        const result = await contextManager.compress(items, strategy, targetTokens);
+        sendResponse({ success: true, data: result });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to compress context',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'CREATE_CHECKPOINT') {
+    (async () => {
+      try {
+        const { createStorageMigration } = await import('@extension/storage/lib/chat/StorageMigration');
+        const { langGraphStore } = await import('@extension/storage/lib/chat/LangGraphStore');
+        const storageMigration = createStorageMigration(langGraphStore);
+
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const sessionId = message.sessionId || 'default-session';
+        const { label, metadata } = message.payload;
+
+        const checkpointId = await storageMigration.createCheckpoint(workspaceId, sessionId, label, metadata);
+        sendResponse({ success: true, data: { checkpointId } });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to create checkpoint',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'RESTORE_CHECKPOINT') {
+    (async () => {
+      try {
+        const { createStorageMigration } = await import('@extension/storage/lib/chat/StorageMigration');
+        const { langGraphStore } = await import('@extension/storage/lib/chat/LangGraphStore');
+        const storageMigration = createStorageMigration(langGraphStore);
+
+        const workspaceId = message.workspaceId || 'default-workspace';
+        const sessionId = message.sessionId || 'default-session';
+        const { checkpointId } = message.payload;
+
+        const result = await storageMigration.restoreCheckpoint(workspaceId, sessionId, checkpointId);
+        sendResponse({ success: true, data: result });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to restore checkpoint',
+        });
+      }
+    })();
+    return true;
+  }
+
+  if (message.type === 'APPLY_COMPRESSION') {
+    (async () => {
+      try {
+        // In a real implementation, this would apply the compression to the actual message history
+        // For now, we'll just log the compression result
+        const { compressionResult } = message.payload;
+        console.log('Applying compression:', compressionResult);
+
+        // TODO: Implement actual compression application
+        // This would involve:
+        // 1. Updating the message history with compressed items
+        // 2. Notifying other components of the change
+        // 3. Updating context storage
+
+        sendResponse({ success: true });
+      } catch (error) {
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Failed to apply compression',
+        });
+      }
+    })();
+    return true;
+  }
+
   // Handle other message types if needed in the future
   // Return false if response is not sent asynchronously
   return false;
@@ -154,6 +869,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 // Setup connection listener for long-lived connections (e.g., side panel)
 chrome.runtime.onConnect.addListener(port => {
+  // Handle approval modal connections
+  if (port.name === 'approval-modal-connection') {
+    port.onMessage.addListener(async message => {
+      // Forward approval requests to the side panel
+      if (currentPort && message.type === 'AGENT_APPROVAL_REQUIRED') {
+        currentPort.postMessage(message);
+      }
+    });
+    return;
+  }
+
+  // Handle approval response connections
+  if (port.name === 'approval-response-connection') {
+    port.onMessage.addListener(async message => {
+      if (message.type === 'AGENT_APPROVAL_GRANTED' || message.type === 'AGENT_APPROVAL_REJECTED') {
+        // Import and handle approval response
+        const { autonomyController } = await import('../services/workspace/AutonomyController');
+        autonomyController.handleApprovalResponse({
+          requestId: message.requestId,
+          approved: message.type === 'AGENT_APPROVAL_GRANTED',
+          workspaceId: message.workspaceId,
+          timestamp: message.timestamp,
+        });
+      }
+    });
+    return;
+  }
+
   if (port.name === 'side-panel-connection') {
     currentPort = port;
 
@@ -171,6 +914,13 @@ chrome.runtime.onConnect.addListener(port => {
 
             logger.info('new_task', message.tabId, message.task);
             currentExecutor = await setupExecutor(message.taskId, message.task, browserContext);
+
+            // DEEP AGENTS: Set workspace context from message
+            const workspaceId = message.workspaceId || 'default';
+            const sessionId = message.taskId;
+            currentExecutor.setWorkspaceContext(workspaceId, sessionId);
+            logger.info('Set workspace context:', workspaceId, sessionId);
+
             subscribeToExecutorEvents(currentExecutor);
 
             const result = await currentExecutor.execute();
@@ -186,6 +936,11 @@ chrome.runtime.onConnect.addListener(port => {
 
             // If executor exists, add follow-up task
             if (currentExecutor) {
+              // DEEP AGENTS: Update workspace context for follow-up
+              const workspaceId = message.workspaceId || 'default';
+              const sessionId = message.taskId;
+              currentExecutor.setWorkspaceContext(workspaceId, sessionId);
+
               currentExecutor.addFollowUpTask(message.task);
               // Re-subscribe to events in case the previous subscription was cleaned up
               subscribeToExecutorEvents(currentExecutor);
