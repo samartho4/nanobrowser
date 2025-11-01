@@ -176,6 +176,20 @@ export class ContextManager {
         saved: Date.now(),
       });
 
+      // Track this key in Chrome storage for retrieval
+      const storageKey = `context_keys_${workspaceId}`;
+      const result = await chrome.storage.local.get(storageKey);
+      const contextKeys: string[] = result[storageKey] || [];
+
+      if (!contextKeys.includes(key)) {
+        contextKeys.push(key);
+        // Keep only the most recent 100 items per workspace
+        if (contextKeys.length > 100) {
+          contextKeys.splice(0, contextKeys.length - 100);
+        }
+        await chrome.storage.local.set({ [storageKey]: contextKeys });
+      }
+
       logger.debug(`Wrote context item ${contextItem.id} to workspace ${workspaceId}`);
     } catch (error) {
       logger.error('Failed to write context item:', error);
@@ -257,10 +271,6 @@ export class ContextManager {
           compressedTokens: originalTokens,
           compressionRatio: 1.0,
           strategy,
-          itemsRemoved: 0,
-          tokensRemoved: 0,
-          summary: 'No compression needed - already within target',
-          itemsToRemove: [],
         };
       }
 
@@ -284,11 +294,7 @@ export class ContextManager {
         compressedTokens,
         compressionRatio,
         strategy,
-        itemsRemoved: itemsToRemove.length,
-        tokensRemoved,
-        summary: `Removed ${itemsToRemove.length} items (${tokensRemoved} tokens, ${((1 - compressionRatio) * 100).toFixed(1)}% reduction)`,
         preview: this.generateCompressionPreview(items, itemsToKeep),
-        itemsToRemove: itemsToRemove.map(item => item.id),
       };
     } catch (error) {
       logger.error('Failed to compress context items:', error);
@@ -599,24 +605,29 @@ export class ContextManager {
       const namespace: MemoryNamespace = {
         userId: 'default',
         workspaceId,
+        threadId: 'default', // Use consistent threadId for context items
       };
 
-      // Try to delete from all possible context types using new key format
-      const contextTypes = ['episodic', 'semantic', 'procedural'];
-      for (const type of contextTypes) {
-        // Handle both old and new key formats for backward compatibility
-        const oldKey = `context:${type}:${itemId}`;
-        const newKeyPattern = `${type}_.*_${itemId}`;
+      // Get tracked keys for this workspace
+      const storageKey = `context_keys_${workspaceId}`;
+      const result = await chrome.storage.local.get(storageKey);
+      const contextKeys: string[] = result[storageKey] || [];
 
+      // Find and remove keys that contain this itemId
+      const keysToRemove = contextKeys.filter(key => key.includes(itemId));
+
+      for (const key of keysToRemove) {
         try {
-          await langGraphStore.delete(namespace, oldKey);
+          await langGraphStore.delete(namespace, key);
+          logger.debug(`Deleted context item with key: ${key}`);
         } catch (error) {
-          // Ignore errors for non-existent keys
+          logger.debug(`Failed to delete key ${key}:`, error);
         }
-
-        // TODO: Implement pattern-based deletion for new key format
-        // This would require enhancing LangGraphStore with pattern matching
       }
+
+      // Update tracked keys
+      const updatedKeys = contextKeys.filter(key => !key.includes(itemId));
+      await chrome.storage.local.set({ [storageKey]: updatedKeys });
 
       logger.debug(`Removed context item ${itemId} from workspace ${workspaceId}`);
     } catch (error) {
@@ -633,6 +644,7 @@ export class ContextManager {
       const namespace: MemoryNamespace = {
         userId: 'default',
         workspaceId,
+        threadId: 'default', // Use consistent threadId for context items
       };
 
       // Update priorities for each item
@@ -667,61 +679,42 @@ export class ContextManager {
       const namespace: MemoryNamespace = {
         userId: 'default',
         workspaceId,
+        threadId: 'default', // Use consistent threadId for context items
       };
 
-      // Try to get items from all context types
-      const contextTypes = ['episodic', 'semantic', 'procedural'];
+      // Use Chrome storage to track context item keys for this workspace
+      const storageKey = `context_keys_${workspaceId}`;
+      const result = await chrome.storage.local.get(storageKey);
+      const contextKeys: string[] = result[storageKey] || [];
 
-      for (const type of contextTypes) {
+      logger.info(
+        `[DEBUG] Found ${contextKeys.length} context keys for workspace ${workspaceId}: ${contextKeys.slice(0, 3).join(', ')}${contextKeys.length > 3 ? '...' : ''}`,
+      );
+
+      // Retrieve each context item by its key
+      for (const key of contextKeys) {
         try {
-          // Try different key patterns that might exist
-          const patterns = [
-            `${type}_`, // New format: episodic_timestamp_id
-            `context:${type}:`, // Old format: context:episodic:id
-          ];
-
-          for (const pattern of patterns) {
-            // Since LangGraphStore search is not implemented, we'll try a different approach
-            // We'll attempt to get items by trying common key patterns
-            for (let i = 0; i < 100; i++) {
-              // Try up to 100 items per type
-              try {
-                const timestamp = Date.now() - i * 60000; // Try recent timestamps
-                const testKey = `${type}_${timestamp}_test`;
-                const item = await langGraphStore.get(namespace, testKey);
-                if (item && item.id && item.content) {
-                  items.push(item as ContextItem);
-                }
-              } catch {
-                // Ignore missing items
-              }
-            }
+          const item = await langGraphStore.get(namespace, key);
+          if (item && item.id && item.content) {
+            items.push(item as ContextItem);
+            logger.info(
+              `[DEBUG] Successfully retrieved context item: ${key} - ${item.type} - ${item.content.substring(0, 50)}...`,
+            );
+          } else {
+            logger.warn(`[DEBUG] Context item not found or invalid: ${key}`);
           }
         } catch (error) {
-          // Continue with other types
+          logger.error(`[DEBUG] Failed to retrieve context item with key ${key}:`, error);
+          // Remove invalid key from storage
+          const updatedKeys = contextKeys.filter(k => k !== key);
+          await chrome.storage.local.set({ [storageKey]: updatedKeys });
         }
       }
 
-      // If no items found with the above approach, try to get from storage directly
-      if (items.length === 0) {
-        try {
-          // Try to get any stored context items using a broader search
-          const searchQuery = {
-            namespace: { workspaceId },
-          };
-          const searchResults = await langGraphStore.search(searchQuery);
+      // Sort by timestamp (newest first)
+      items.sort((a, b) => b.metadata.timestamp - a.metadata.timestamp);
 
-          for (const result of searchResults) {
-            if (result.value && result.value.id && result.value.content) {
-              items.push(result.value as ContextItem);
-            }
-          }
-        } catch (error) {
-          logger.debug('Search method not available, using fallback approach');
-        }
-      }
-
-      logger.debug(`Retrieved ${items.length} context items for workspace ${workspaceId}`);
+      logger.info(`[DEBUG] Retrieved ${items.length} context items for workspace ${workspaceId}`);
       return items;
     } catch (error) {
       logger.error('Failed to get context items:', error);
@@ -1040,7 +1033,7 @@ export class ContextManager {
 
     // Strategy-specific preservation rules
     switch (strategy.name) {
-      case 'conservative':
+      case 'minimal':
         // Preserve recent items (last hour) and important items
         return itemAge < oneHour || item.metadata.priority >= 4;
 
@@ -1051,10 +1044,6 @@ export class ContextManager {
       case 'aggressive':
         // Only preserve very recent and very important items
         return itemAge < oneHour || item.metadata.priority >= 5;
-
-      case 'semantic':
-        // Preserve based on relevance score and importance
-        return (item.metadata.relevanceScore || 0) > 0.7 || item.metadata.priority >= 4;
 
       default:
         return item.metadata.priority >= 4;

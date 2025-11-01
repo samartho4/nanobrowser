@@ -100,6 +100,9 @@ export async function getRealGmailMemoryStats(workspaceId: string): Promise<Real
       });
     }
 
+    // CONTEXT BRIDGE: Write Gmail context items for Context Pills
+    await writeGmailContextItems(workspaceId, emailData);
+
     // Categorize emails into memory types
     const episodicEmails = emailData.filter(e => e.memoryType === 'episodic');
     const semanticEmails = emailData.filter(e => e.memoryType === 'semantic');
@@ -1822,4 +1825,99 @@ function calculateAvgSuccess(emails: EmailAnalysis[]): number {
     return Math.min(1, success);
   });
   return Math.round((successScores.reduce((sum, s) => sum + s, 0) / successScores.length) * 100);
+}
+
+/**
+ * CONTEXT BRIDGE: Write Gmail context items for Context Pills display
+ */
+async function writeGmailContextItems(workspaceId: string, emailData: EmailAnalysis[]): Promise<void> {
+  try {
+    logger.info(`Writing ${emailData.length} Gmail context items for workspace: ${workspaceId}`);
+
+    // Import ContextManager dynamically to avoid circular dependencies
+    const { contextManager } = await import('../../services/context/ContextManager');
+
+    let contextItemsWritten = 0;
+
+    // Write episodic context items (recent email conversations)
+    const episodicEmails = emailData.filter(e => e.memoryType === 'episodic').slice(0, 5); // Limit to 5 most recent
+    for (const email of episodicEmails) {
+      await contextManager.write(
+        workspaceId,
+        {
+          type: 'gmail',
+          content: `${email.subject}\nFrom: ${email.from}\nTo: ${email.to.join(', ')}\n\n${email.bodyText.substring(0, 200)}...`,
+          agentId: 'gmail-integration',
+          sourceType: 'main',
+          metadata: {
+            source: 'gmail-conversation',
+            priority: email.actionRequired ? 5 : email.priority === 'urgent' ? 4 : 3,
+            sessionId: `gmail_${new Date(email.timestamp).toISOString().split('T')[0]}`,
+            relevanceScore: email.actionRequired ? 0.9 : 0.6,
+          },
+        },
+        'episodic',
+      );
+      contextItemsWritten++;
+    }
+
+    // Write semantic context items (contact patterns and insights)
+    const semanticEmails = emailData.filter(e => e.memoryType === 'semantic').slice(0, 3); // Limit to 3 most relevant
+    for (const email of semanticEmails) {
+      await contextManager.write(
+        workspaceId,
+        {
+          type: 'gmail',
+          content: `Contact Insight: ${email.from}\nCategory: ${email.category}\nSentiment: ${email.sentiment}\nContent: ${email.bodyText.substring(0, 150)}...`,
+          agentId: 'gmail-integration',
+          sourceType: 'main',
+          metadata: {
+            source: 'gmail-contact-analysis',
+            priority: email.priority === 'important' ? 4 : 2,
+            sessionId: `gmail_contacts_${new Date().toISOString().split('T')[0]}`,
+            relevanceScore: email.priority === 'important' ? 0.8 : 0.5,
+          },
+        },
+        'semantic',
+      );
+      contextItemsWritten++;
+    }
+
+    // Write procedural context items (workflow patterns)
+    const proceduralEmails = emailData.filter(e => e.memoryType === 'procedural').slice(0, 2); // Limit to 2 patterns
+    for (const email of proceduralEmails) {
+      await contextManager.write(
+        workspaceId,
+        {
+          type: 'memory',
+          content: `Email Workflow Pattern: ${email.category} emails\nTypical response: ${email.sentiment} sentiment\nAction required: ${email.actionRequired ? 'Yes' : 'No'}\nExample: ${email.subject}`,
+          agentId: 'gmail-integration',
+          sourceType: 'main',
+          metadata: {
+            source: 'gmail-workflow-pattern',
+            priority: 3,
+            sessionId: `gmail_patterns_${new Date().toISOString().split('T')[0]}`,
+            relevanceScore: 0.7,
+          },
+        },
+        'procedural',
+      );
+      contextItemsWritten++;
+    }
+
+    logger.info(`Successfully wrote ${contextItemsWritten} Gmail context items to workspace: ${workspaceId}`);
+
+    // DEBUG: Test immediate retrieval to verify context bridge
+    try {
+      const testItems = await contextManager.select(workspaceId, '', 10000, {});
+      logger.info(`[DEBUG] Immediate retrieval test: Found ${testItems.length} context items after writing`);
+      if (testItems.length > 0) {
+        logger.info(`[DEBUG] Sample context item: ${testItems[0].type} - ${testItems[0].content.substring(0, 50)}...`);
+      }
+    } catch (error) {
+      logger.error(`[DEBUG] Immediate retrieval test failed:`, error);
+    }
+  } catch (error) {
+    logger.error('Failed to write Gmail context items:', error);
+  }
 }

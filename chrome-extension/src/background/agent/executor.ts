@@ -616,9 +616,117 @@ export class Executor {
         }
       }
 
+      // CONTEXT BRIDGE: Write context items to ContextManager for Context Pills
+      await this.writeContextItems(runContext, result);
+
       logger.debug('🔄 Deep Agents: Completed post-run memory processing');
     } catch (error) {
       logger.error('Failed to process agent run results:', error);
+    }
+  }
+
+  /**
+   * Write context items to ContextManager for Context Pills display
+   */
+  private async writeContextItems(runContext: AgentRunContext, result: AgentRunResult): Promise<void> {
+    try {
+      logger.debug('🔄 Deep Agents: Writing context items to ContextManager');
+
+      // Write the main task as a message context item
+      await contextManager.write(
+        runContext.workspaceId,
+        {
+          type: 'message',
+          content: `Task: ${result.query}\nOutcome: ${result.outcome}`,
+          agentId: 'main-agent',
+          sourceType: 'main',
+          metadata: {
+            source: 'agent-execution',
+            priority: result.success ? 4 : 3,
+            sessionId: runContext.sessionId,
+            relevanceScore: 0.8,
+          },
+        },
+        'episodic',
+      );
+
+      // Write successful actions as procedural context
+      if (result.success && result.actions.length > 0) {
+        await contextManager.write(
+          runContext.workspaceId,
+          {
+            type: 'memory',
+            content: `Successful workflow: ${result.actions.join(' → ')}`,
+            agentId: 'main-agent',
+            sourceType: 'main',
+            metadata: {
+              source: 'successful-workflow',
+              priority: 5,
+              sessionId: runContext.sessionId,
+              relevanceScore: 0.9,
+            },
+          },
+          'procedural',
+        );
+      }
+
+      // Write memory insights as context items
+      if (runContext.memories.length > 0) {
+        const memoryContent = runContext.memories
+          .slice(0, 3) // Limit to top 3 memories
+          .map(memory => {
+            if (typeof memory === 'string') return memory;
+            return memory.content || memory.description || String(memory);
+          })
+          .join('\n\n');
+
+        await contextManager.write(
+          runContext.workspaceId,
+          {
+            type: 'memory',
+            content: `Relevant memories:\n${memoryContent}`,
+            agentId: 'memory-agent',
+            sourceType: 'main',
+            metadata: {
+              source: 'memory-insights',
+              priority: 3,
+              sessionId: runContext.sessionId,
+              relevanceScore: 0.7,
+            },
+          },
+          'semantic',
+        );
+      }
+
+      // Write subagent plans as context items
+      if (runContext.subagentPlans.length > 0) {
+        const plansContent = runContext.subagentPlans
+          .map(plan => `${plan.agentType}: ${plan.goal} (confidence: ${Math.round(plan.confidence * 100)}%)`)
+          .join('\n');
+
+        await contextManager.write(
+          runContext.workspaceId,
+          {
+            type: 'memory',
+            content: `Subagent plans:\n${plansContent}`,
+            agentId: 'planner-agent',
+            sourceType: 'main',
+            metadata: {
+              source: 'subagent-plans',
+              priority: 2,
+              sessionId: runContext.sessionId,
+              relevanceScore: 0.6,
+            },
+          },
+          'episodic',
+        );
+      }
+
+      logger.debug(
+        `🔄 Deep Agents: Wrote ${1 + (result.success ? 1 : 0) + (runContext.memories.length > 0 ? 1 : 0) + (runContext.subagentPlans.length > 0 ? 1 : 0)} context items`,
+      );
+    } catch (error) {
+      logger.error('Failed to write context items:', error);
     }
   }
 

@@ -5,24 +5,19 @@ import { Button } from '@extension/ui';
 import { withErrorBoundary, withSuspense } from '@extension/shared';
 import { ThemeProvider, useTheme } from '@extension/shared';
 import { t } from '@extension/i18n';
-import { FiSettings, FiCpu, FiShield, FiTrendingUp, FiHelpCircle, FiTool, FiLayers } from 'react-icons/fi';
+import { FiSettings, FiCpu, FiTool, FiLayers } from 'react-icons/fi';
 import { GeneralSettings } from './components/GeneralSettings';
 import { ModelSettings } from './components/ModelSettings';
-import { FirewallSettings } from './components/FirewallSettings';
-import { AnalyticsSettings } from './components/AnalyticsSettings';
 import { ToolsSettings } from './components/ToolsSettings';
 import { WorkspaceSettings } from './components/WorkspaceSettings';
 
-type TabTypes = 'general' | 'models' | 'firewall' | 'analytics' | 'tools' | 'workspaces' | 'help';
+type TabTypes = 'general' | 'models' | 'tools' | 'workspaces';
 
 const TABS: { id: TabTypes; icon: React.ComponentType<{ className?: string }>; label: string }[] = [
-  { id: 'general', icon: FiSettings, label: t('options_tabs_general') },
-  { id: 'models', icon: FiCpu, label: t('options_tabs_models') },
-  { id: 'firewall', icon: FiShield, label: t('options_tabs_firewall') },
-  { id: 'analytics', icon: FiTrendingUp, label: 'Analytics' },
+  { id: 'general', icon: FiSettings, label: 'Agent' },
+  { id: 'models', icon: FiCpu, label: 'LLM' },
   { id: 'tools', icon: FiTool, label: 'Tools' },
   { id: 'workspaces', icon: FiLayers, label: 'Workspaces' },
-  { id: 'help', icon: FiHelpCircle, label: t('options_tabs_help') },
 ];
 
 const OptionsContent = () => {
@@ -30,11 +25,7 @@ const OptionsContent = () => {
   const { isDarkMode } = useTheme();
 
   const handleTabClick = (tabId: TabTypes) => {
-    if (tabId === 'help') {
-      window.open('https://nanobrowser.ai/docs', '_blank');
-    } else {
-      setActiveTab(tabId);
-    }
+    setActiveTab(tabId);
   };
 
   const renderTabContent = () => {
@@ -43,10 +34,6 @@ const OptionsContent = () => {
         return <GeneralSettings isDarkMode={isDarkMode} />;
       case 'models':
         return <ModelSettings isDarkMode={isDarkMode} />;
-      case 'firewall':
-        return <FirewallSettings isDarkMode={isDarkMode} />;
-      case 'analytics':
-        return <AnalyticsSettings isDarkMode={isDarkMode} />;
       case 'tools':
         return <ToolsSettings isDarkMode={isDarkMode} />;
       case 'workspaces':

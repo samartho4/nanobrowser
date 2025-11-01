@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
-import ReactECharts from 'echarts-for-react';
-import { FiTrash2, FiInfo, FiRefreshCw, FiUser, FiFile, FiMail, FiClock, FiGlobe, FiDatabase } from 'react-icons/fi';
+import React, { useState, useEffect, useMemo } from 'react';
+import { ResponsiveSunburst } from '@nivo/sunburst';
+import { FiTrash2, FiInfo, FiRefreshCw, FiMail, FiTarget } from 'react-icons/fi';
 
 interface ContextItem {
   id: string;
-  type: 'message' | 'page' | 'gmail' | 'memory' | 'file' | 'history';
+  type: 'gmail';
   content: string;
   metadata: {
     source: string;
@@ -13,6 +13,7 @@ interface ContextItem {
     priority: number;
     workspaceId: string;
     relevanceScore?: number;
+    memoryType: 'episodic' | 'semantic' | 'procedural';
   };
 }
 
@@ -22,18 +23,48 @@ interface ContextSunburstChartProps {
   onContextRemoved: () => void;
 }
 
-interface SunburstDataNode {
+interface SunburstNode {
   name: string;
-  value: number;
+  value?: number;
+  color?: string;
+  children?: SunburstNode[];
   itemId?: string;
-  itemType?: string;
-  children?: SunburstDataNode[];
-  itemStyle?: {
-    color?: string;
-    borderColor?: string;
-    borderWidth?: number;
-  };
+  itemData?: ContextItem;
 }
+
+// Vibrant, distinct color palette - each email gets a unique color
+const VIBRANT_COLORS = {
+  episodic: [
+    '#3B82F6', // Bright Blue
+    '#60A5FA', // Sky Blue
+    '#2563EB', // Royal Blue
+    '#1D4ED8', // Deep Blue
+    '#93C5FD', // Light Blue
+    '#DBEAFE', // Pale Blue
+    '#1E40AF', // Navy Blue
+    '#BFDBFE', // Baby Blue
+  ],
+  semantic: [
+    '#10B981', // Emerald
+    '#34D399', // Light Green
+    '#059669', // Forest Green
+    '#047857', // Dark Green
+    '#6EE7B7', // Mint
+    '#A7F3D0', // Pale Green
+    '#065F46', // Deep Forest
+    '#D1FAE5', // Light Mint
+  ],
+  procedural: [
+    '#8B5CF6', // Purple
+    '#A78BFA', // Light Purple
+    '#7C3AED', // Violet
+    '#6D28D9', // Deep Purple
+    '#C4B5FD', // Lavender
+    '#DDD6FE', // Pale Purple
+    '#5B21B6', // Dark Violet
+    '#EDE9FE', // Light Lavender
+  ],
+};
 
 export const ContextSunburstChart: React.FC<ContextSunburstChartProps> = ({
   workspaceId,
@@ -44,519 +75,204 @@ export const ContextSunburstChart: React.FC<ContextSunburstChartProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [selectedItem, setSelectedItem] = useState<ContextItem | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [draggedItem, setDraggedItem] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const chartRef = useRef<ReactECharts>(null);
+  const [hoveredItem, setHoveredItem] = useState<string | null>(null);
+  const [deleteMode, setDeleteMode] = useState(false);
 
-  // Load context data on mount
   useEffect(() => {
     loadContextData();
   }, [workspaceId]);
 
+  const pollTaskStatus = async (taskId: string, maxAttempts = 40): Promise<any> => {
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const statusResponse = await chrome.runtime.sendMessage({
+          type: 'GET_TASK_STATUS',
+          payload: { taskId },
+        });
+
+        if (statusResponse?.success && statusResponse?.task) {
+          const task = statusResponse.task;
+
+          if (task.status === 'completed') {
+            return task.result || [];
+          } else if (task.status === 'failed') {
+            return [];
+          }
+
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } else {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      } catch (error) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+    return [];
+  };
+
   const loadContextData = async () => {
     try {
       setIsLoading(true);
+      console.log(`[ContextSunburst] Loading data for: ${workspaceId}`);
 
-      // Get REAL context pills data (same as side panel uses)
-      const pillsResponse = await chrome.runtime.sendMessage({
-        type: 'GET_CONTEXT_PILLS',
-        payload: { workspaceId },
-      });
+      const tasks = await Promise.all([
+        chrome.runtime
+          .sendMessage({
+            type: 'GET_EMAILS_BY_MEMORY_TYPE',
+            payload: { workspaceId, memoryType: 'episodic' },
+          })
+          .catch(() => ({ success: false })),
+        chrome.runtime
+          .sendMessage({
+            type: 'GET_EMAILS_BY_MEMORY_TYPE',
+            payload: { workspaceId, memoryType: 'semantic' },
+          })
+          .catch(() => ({ success: false })),
+        chrome.runtime
+          .sendMessage({
+            type: 'GET_EMAILS_BY_MEMORY_TYPE',
+            payload: { workspaceId, memoryType: 'procedural' },
+          })
+          .catch(() => ({ success: false })),
+      ]);
 
-      if (pillsResponse?.ok && pillsResponse.pills && pillsResponse.pills.length > 0) {
-        // Convert pills to ContextItem format
-        const realContextItems: ContextItem[] = pillsResponse.pills.map((pill: any) => ({
-          id: pill.id,
-          type: pill.type,
-          content: pill.preview || pill.label,
+      const results = await Promise.all([
+        tasks[0]?.success && tasks[0]?.taskId ? pollTaskStatus(tasks[0].taskId) : Promise.resolve([]),
+        tasks[1]?.success && tasks[1]?.taskId ? pollTaskStatus(tasks[1].taskId) : Promise.resolve([]),
+        tasks[2]?.success && tasks[2]?.taskId ? pollTaskStatus(tasks[2].taskId) : Promise.resolve([]),
+      ]);
+
+      const allEmails = [
+        ...(Array.isArray(results[0]) ? results[0] : []),
+        ...(Array.isArray(results[1]) ? results[1] : []),
+        ...(Array.isArray(results[2]) ? results[2] : []),
+      ];
+
+      if (allEmails.length > 0) {
+        const items: ContextItem[] = allEmails.map((email: any) => ({
+          id: email.messageId || `email_${Date.now()}_${Math.random()}`,
+          type: 'gmail',
+          content: `${email.subject || 'No Subject'}\n\nFrom: ${email.from || 'Unknown'}\n\n${email.bodyText || ''}`,
           metadata: {
-            source: pill.agentId || 'main-agent',
-            timestamp: Date.now(),
-            tokens: pill.tokens,
-            priority: pill.priority,
+            source: `gmail-${email.memoryType}`,
+            timestamp: email.timestamp || Date.now(),
+            tokens: Math.max(10, Math.ceil(((email.subject?.length || 0) + (email.bodyText?.length || 0)) / 4)),
+            priority: email.priority === 'urgent' ? 5 : email.priority === 'important' ? 4 : 3,
             workspaceId,
-            relevanceScore: 0.8,
+            relevanceScore: email.actionRequired ? 0.9 : 0.6,
+            memoryType: email.memoryType,
           },
         }));
 
-        setContextData(realContextItems);
-        console.log(`Loaded ${realContextItems.length} real context items`);
+        setContextData(items);
+        console.log(`[ContextSunburst] Loaded ${items.length} items`);
       } else {
-        // Try alternative method - direct context select
-        const selectResponse = await chrome.runtime.sendMessage({
-          type: 'TEST_CONTEXT_SELECT',
-          payload: {
-            workspaceId,
-            query: '',
-            tokenLimit: 50000,
-            options: {},
-          },
-        });
-
-        if (selectResponse?.ok && selectResponse.items && selectResponse.items.length > 0) {
-          setContextData(selectResponse.items);
-          console.log(`Loaded ${selectResponse.items.length} context items via select`);
-        } else {
-          console.log('No real context data found - showing empty state');
-          setContextData([]);
-        }
+        setContextData([]);
       }
     } catch (error) {
-      console.error('Error loading context data:', error);
+      console.error('[ContextSunburst] Error:', error);
       setContextData([]);
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Get type icon for context items
-  const getTypeIcon = (type: string) => {
-    const icons = {
-      message: FiUser,
-      page: FiGlobe,
-      gmail: FiMail,
-      memory: FiDatabase,
-      file: FiFile,
-      history: FiClock,
-    };
-    return icons[type as keyof typeof icons] || FiDatabase;
+  // Get distinct color for each item
+  const getItemColor = (memoryType: string, index: number) => {
+    const colors = VIBRANT_COLORS[memoryType as keyof typeof VIBRANT_COLORS] || VIBRANT_COLORS.episodic;
+    return colors[index % colors.length];
   };
 
-  // Transform context data into ECharts sunburst format
-  const transformToSunburstData = (): SunburstDataNode => {
+  const sunburstData = useMemo((): SunburstNode => {
     if (contextData.length === 0) {
-      return {
-        name: 'No Context Data',
-        value: 0,
-        children: [],
-      };
+      return { name: 'No Data', children: [] };
     }
 
-    const typeGroups = contextData.reduce(
-      (acc, item) => {
-        if (!acc[item.type]) {
-          acc[item.type] = [];
-        }
-        acc[item.type].push(item);
-        return acc;
-      },
-      {} as Record<string, ContextItem[]>,
-    );
+    const episodicItems = contextData.filter(item => item.metadata.memoryType === 'episodic');
+    const semanticItems = contextData.filter(item => item.metadata.memoryType === 'semantic');
+    const proceduralItems = contextData.filter(item => item.metadata.memoryType === 'procedural');
 
-    // Beautiful gradient color schemes
-    const typeColors = {
-      message: {
-        base: isDarkMode ? '#3b82f6' : '#2563eb',
-        gradient: isDarkMode ? ['#1e40af', '#3b82f6', '#60a5fa'] : ['#1d4ed8', '#2563eb', '#3b82f6'],
-      },
-      page: {
-        base: isDarkMode ? '#10b981' : '#059669',
-        gradient: isDarkMode ? ['#047857', '#10b981', '#34d399'] : ['#065f46', '#059669', '#10b981'],
-      },
-      gmail: {
-        base: isDarkMode ? '#f59e0b' : '#d97706',
-        gradient: isDarkMode ? ['#d97706', '#f59e0b', '#fbbf24'] : ['#b45309', '#d97706', '#f59e0b'],
-      },
-      memory: {
-        base: isDarkMode ? '#8b5cf6' : '#7c3aed',
-        gradient: isDarkMode ? ['#7c3aed', '#8b5cf6', '#a78bfa'] : ['#6d28d9', '#7c3aed', '#8b5cf6'],
-      },
-      file: {
-        base: isDarkMode ? '#ef4444' : '#dc2626',
-        gradient: isDarkMode ? ['#dc2626', '#ef4444', '#f87171'] : ['#b91c1c', '#dc2626', '#ef4444'],
-      },
-      history: {
-        base: isDarkMode ? '#6b7280' : '#4b5563',
-        gradient: isDarkMode ? ['#4b5563', '#6b7280', '#9ca3af'] : ['#374151', '#4b5563', '#6b7280'],
-      },
-      // Additional types that might come from real data
-      email: {
-        base: isDarkMode ? '#f59e0b' : '#d97706',
-        gradient: isDarkMode ? ['#d97706', '#f59e0b', '#fbbf24'] : ['#b45309', '#d97706', '#f59e0b'],
-      },
-      document: {
-        base: isDarkMode ? '#10b981' : '#059669',
-        gradient: isDarkMode ? ['#047857', '#10b981', '#34d399'] : ['#065f46', '#059669', '#10b981'],
-      },
-      chat: {
-        base: isDarkMode ? '#3b82f6' : '#2563eb',
-        gradient: isDarkMode ? ['#1e40af', '#3b82f6', '#60a5fa'] : ['#1d4ed8', '#2563eb', '#3b82f6'],
-      },
-      web: {
-        base: isDarkMode ? '#10b981' : '#059669',
-        gradient: isDarkMode ? ['#047857', '#10b981', '#34d399'] : ['#065f46', '#059669', '#10b981'],
-      },
-    };
+    const children: SunburstNode[] = [];
 
-    // Default fallback color scheme for unknown types
-    const defaultColorScheme = {
-      base: isDarkMode ? '#6b7280' : '#4b5563',
-      gradient: isDarkMode ? ['#4b5563', '#6b7280', '#9ca3af'] : ['#374151', '#4b5563', '#6b7280'],
-    };
-
-    const children: SunburstDataNode[] = Object.entries(typeGroups).map(([type, items], typeIndex) => {
-      const colorScheme = typeColors[type as keyof typeof typeColors] || defaultColorScheme;
-
-      return {
-        name: `${type.charAt(0).toUpperCase() + type.slice(1)} (${items.length})`,
-        value: items.reduce((sum, item) => sum + item.metadata.tokens, 0),
-        itemStyle: {
-          color: colorScheme.base,
-          borderColor: isDarkMode ? '#1f2937' : '#ffffff',
-          borderWidth: 3,
-          shadowBlur: 8,
-          shadowColor: colorScheme.base + '40',
-        },
-        children: items.map((item, itemIndex) => ({
-          name: item.content.substring(0, 35) + (item.content.length > 35 ? '...' : ''),
+    if (episodicItems.length > 0) {
+      children.push({
+        name: `Episodic (${episodicItems.length})`,
+        color: '#3B82F6',
+        children: episodicItems.map((item, idx) => ({
+          name: item.content.substring(0, 25) + '...',
           value: item.metadata.tokens,
+          color: getItemColor('episodic', idx),
           itemId: item.id,
-          itemType: type,
-          itemStyle: {
-            color: colorScheme.gradient[itemIndex % colorScheme.gradient.length],
-            borderColor: isDarkMode ? '#374151' : '#f3f4f6',
-            borderWidth: 1,
-            shadowBlur: 4,
-            shadowColor: colorScheme.base + '20',
-          },
+          itemData: item,
         })),
-      };
-    });
+      });
+    }
+
+    if (semanticItems.length > 0) {
+      children.push({
+        name: `Semantic (${semanticItems.length})`,
+        color: '#10B981',
+        children: semanticItems.map((item, idx) => ({
+          name: item.content.substring(0, 25) + '...',
+          value: item.metadata.tokens,
+          color: getItemColor('semantic', idx),
+          itemId: item.id,
+          itemData: item,
+        })),
+      });
+    }
+
+    if (proceduralItems.length > 0) {
+      children.push({
+        name: `Procedural (${proceduralItems.length})`,
+        color: '#8B5CF6',
+        children: proceduralItems.map((item, idx) => ({
+          name: item.content.substring(0, 25) + '...',
+          value: item.metadata.tokens,
+          color: getItemColor('procedural', idx),
+          itemId: item.id,
+          itemData: item,
+        })),
+      });
+    }
 
     return {
-      name: `Context Map (${contextData.length} items)`,
-      value: contextData.reduce((sum, item) => sum + item.metadata.tokens, 0),
+      name: `Context (${contextData.length})`,
+      color: isDarkMode ? '#1F2937' : '#F9FAFB',
       children,
-      itemStyle: {
-        color: isDarkMode ? '#1f2937' : '#f9fafb',
-        borderColor: isDarkMode ? '#4b5563' : '#e5e7eb',
-        borderWidth: 2,
-      },
     };
-  };
+  }, [contextData, isDarkMode]);
 
-  // Handle context item deletion
   const handleDeleteContext = async (itemId: string) => {
     try {
-      console.log(`Attempting to delete context item: ${itemId}`);
-
-      // Optimistically update UI first for better UX
-      const itemToDelete = contextData.find(item => item.id === itemId);
-      if (!itemToDelete) {
-        console.warn(`Context item ${itemId} not found in local state`);
-        return;
-      }
-
-      // Remove from local state immediately
-      setContextData(prev => {
-        const filtered = prev.filter(item => item.id !== itemId);
-        console.log(`Removed item from UI. Remaining items: ${filtered.length}`);
-        return filtered;
-      });
-
-      // Force chart re-render
-      setRefreshKey(prev => prev + 1);
-
-      // Clear selection and modal
+      setContextData(prev => prev.filter(item => item.id !== itemId));
       setSelectedItem(null);
       setShowDeleteConfirm(false);
+      setDeleteMode(false);
 
-      // Try to delete from backend
-      const response = await chrome.runtime.sendMessage({
+      await chrome.runtime.sendMessage({
         type: 'REMOVE_CONTEXT_ITEM',
         payload: { workspaceId, itemId },
       });
 
-      if (response?.ok) {
-        console.log(`Context item ${itemId} deleted successfully from backend`);
-        onContextRemoved(); // Refresh parent component
-      } else {
-        console.error('Backend deletion failed:', response?.error);
-        // If backend fails, we could revert the UI change here
-        // But for now, we'll keep the optimistic update
-      }
+      onContextRemoved();
     } catch (error) {
-      console.error('Error deleting context item:', error);
-      // If there's an error, we could revert the UI change here
+      console.error('[ContextSunburst] Delete error:', error);
     }
   };
 
-  // ECharts configuration
-  const getChartOption = () => {
-    const sunburstData = transformToSunburstData();
-
-    return {
-      backgroundColor: 'transparent',
-      tooltip: {
-        trigger: 'item',
-        formatter: (params: any) => {
-          if (params.data.itemId) {
-            const item = contextData.find(ctx => ctx.id === params.data.itemId);
-            const TypeIcon = getTypeIcon(params.data.itemType);
-            return `
-              <div style="max-width: 320px; padding: 12px;">
-                <div style="display: flex; align-items: center; margin-bottom: 8px;">
-                  <div style="margin-right: 8px; color: ${params.color};">●</div>
-                  <strong style="color: ${isDarkMode ? '#f3f4f6' : '#1f2937'};">${params.data.name}</strong>
-                </div>
-                <div style="margin-bottom: 8px;">
-                  <span style="color: #6b7280;">Type:</span> 
-                  <span style="color: ${params.color}; font-weight: 500;">${params.data.itemType}</span>
-                  <span style="margin-left: 12px; color: #6b7280;">Tokens:</span> 
-                  <span style="color: ${isDarkMode ? '#f3f4f6' : '#1f2937'}; font-weight: 500;">${params.data.value}</span>
-                </div>
-                <div style="margin-bottom: 8px;">
-                  <span style="color: #6b7280;">Source:</span> 
-                  <span style="color: ${isDarkMode ? '#d1d5db' : '#4b5563'};">${item?.metadata.source || 'Unknown'}</span>
-                </div>
-                <div style="margin: 12px 0; padding: 10px; background: ${isDarkMode ? '#374151' : '#f3f4f6'}; border-radius: 6px; font-size: 12px; line-height: 1.4;">
-                  ${item?.content.substring(0, 180)}${(item?.content?.length || 0) > 180 ? '...' : ''}
-                </div>
-                <div style="text-align: center; color: #ef4444; font-size: 11px; font-weight: 500;">
-                  🗑️ Click to delete • Double-click for quick delete
-                </div>
-              </div>
-            `;
-          }
-          return `
-            <div style="padding: 8px;">
-              <strong style="color: ${isDarkMode ? '#f3f4f6' : '#1f2937'};">${params.data.name}</strong><br/>
-              <span style="color: #6b7280;">Total: ${params.data.value} tokens</span>
-            </div>
-          `;
-        },
-        backgroundColor: isDarkMode ? '#1f2937' : '#ffffff',
-        borderColor: isDarkMode ? '#4b5563' : '#d1d5db',
-        borderWidth: 1,
-        shadowBlur: 10,
-        shadowColor: isDarkMode ? 'rgba(0,0,0,0.3)' : 'rgba(0,0,0,0.1)',
-        textStyle: {
-          color: isDarkMode ? '#f3f4f6' : '#1f2937',
-        },
-      },
-      series: [
-        {
-          type: 'sunburst',
-          data: [sunburstData],
-          radius: [25, '88%'],
-          center: ['50%', '50%'],
-          sort: null,
-          emphasis: {
-            focus: 'ancestor',
-            itemStyle: {
-              shadowBlur: 15,
-              shadowOffsetX: 0,
-              shadowOffsetY: 0,
-              shadowColor: isDarkMode ? 'rgba(255, 255, 255, 0.4)' : 'rgba(0, 0, 0, 0.4)',
-            },
-            label: {
-              fontSize: 14,
-              fontWeight: 'bold',
-            },
-          },
-          blur: {
-            itemStyle: {
-              opacity: 0.2,
-            },
-            label: {
-              opacity: 0.3,
-            },
-          },
-          select: {
-            itemStyle: {
-              shadowBlur: 20,
-              shadowColor: '#3b82f6',
-            },
-          },
-          levels: [
-            {
-              // Root level
-              itemStyle: {
-                color: 'transparent',
-                borderColor: isDarkMode ? '#4b5563' : '#d1d5db',
-                borderWidth: 2,
-              },
-              label: {
-                show: false,
-              },
-            },
-            {
-              // Type level (message, page, gmail, etc.)
-              r0: '20%',
-              r: '45%',
-              itemStyle: {
-                borderWidth: 4,
-                borderColor: isDarkMode ? '#111827' : '#ffffff',
-                shadowBlur: 6,
-                shadowColor: 'rgba(0,0,0,0.1)',
-              },
-              label: {
-                fontSize: 13,
-                fontWeight: 'bold',
-                rotate: 'tangential',
-                color: isDarkMode ? '#ffffff' : '#000000',
-                distance: 5,
-              },
-            },
-            {
-              // Individual context items level
-              r0: '45%',
-              r: '88%',
-              label: {
-                fontSize: 9,
-                rotate: 'tangential',
-                color: isDarkMode ? '#e5e7eb' : '#374151',
-                distance: 3,
-                overflow: 'truncate',
-              },
-              itemStyle: {
-                borderWidth: 1,
-                borderColor: isDarkMode ? '#374151' : '#f9fafb',
-                shadowBlur: 3,
-                shadowColor: 'rgba(0,0,0,0.05)',
-              },
-            },
-          ],
-          animationType: 'expansion',
-          animationEasing: 'cubicOut',
-          animationDuration: 1000,
-          animationDelay: (idx: number) => idx * 50,
-        },
-      ],
-    };
-  };
-
-  // Handle chart click events
-  const handleChartClick = (params: any) => {
-    if (params.data.itemId) {
-      const item = contextData.find(ctx => ctx.id === params.data.itemId);
-      if (item) {
-        setSelectedItem(item);
-        setShowDeleteConfirm(true);
-      }
-    }
-  };
-
-  // Handle drag and drop deletion
-  const handleChartMouseDown = (params: any) => {
-    if (params.data.itemId) {
-      setDraggedItem(params.data.itemId);
-    }
-  };
-
-  const handleChartMouseUp = () => {
-    setDraggedItem(null);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    if (draggedItem) {
-      handleDeleteContext(draggedItem);
-      setDraggedItem(null);
-    }
-  };
-
-  // Handle chart double-click for quick delete
-  const handleChartDoubleClick = (params: any) => {
-    if (params.data.itemId) {
-      // Double-click should delete immediately without confirmation
-      handleDeleteContext(params.data.itemId);
-    }
-  };
+  const totalTokens = contextData.reduce((sum, item) => sum + item.metadata.tokens, 0);
 
   if (isLoading) {
     return (
       <div className={`p-6 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
         <div className="flex items-center justify-center space-x-2">
-          <FiRefreshCw className="w-5 h-5 animate-spin" />
-          <span>Loading context visualization...</span>
+          <FiRefreshCw className="w-5 h-5 animate-spin text-blue-500" />
+          <span className={isDarkMode ? 'text-gray-300' : 'text-gray-700'}>Loading Gmail context...</span>
         </div>
       </div>
     );
   }
-
-  // Add sample context data for testing
-  const addSampleContextData = async () => {
-    try {
-      const sampleItems = [
-        {
-          type: 'message',
-          content: 'User discussion about implementing interactive context visualization with sunburst charts',
-          metadata: {
-            source: 'chat-session',
-            priority: 5,
-            sessionId: 'demo-session',
-          },
-        },
-        {
-          type: 'page',
-          content: 'ECharts documentation for sunburst charts - comprehensive guide to interactive data visualization',
-          metadata: {
-            source: 'web-documentation',
-            priority: 4,
-            sessionId: 'demo-session',
-          },
-        },
-        {
-          type: 'memory',
-          content: 'Previous implementation notes about context management system and user interface requirements',
-          metadata: {
-            source: 'memory-system',
-            priority: 4,
-            sessionId: 'demo-session',
-          },
-        },
-        {
-          type: 'gmail',
-          content:
-            'Email thread discussing project specifications and technical requirements for context visualization features',
-          metadata: {
-            source: 'gmail-integration',
-            priority: 3,
-            sessionId: 'demo-session',
-          },
-        },
-        {
-          type: 'file',
-          content: 'TypeScript interface definitions and component structure for ContextSunburstChart implementation',
-          metadata: {
-            source: 'code-repository',
-            priority: 3,
-            sessionId: 'demo-session',
-          },
-        },
-        {
-          type: 'history',
-          content: 'Browser history showing research on data visualization libraries and interactive chart components',
-          metadata: {
-            source: 'browser-history',
-            priority: 2,
-            sessionId: 'demo-session',
-          },
-        },
-      ];
-
-      for (const item of sampleItems) {
-        await chrome.runtime.sendMessage({
-          type: 'TEST_CONTEXT_WRITE',
-          payload: {
-            workspaceId,
-            contextItem: item,
-          },
-        });
-      }
-
-      // Reload context data after adding samples
-      await loadContextData();
-    } catch (error) {
-      console.error('Failed to add sample context data:', error);
-    }
-  };
 
   if (contextData.length === 0) {
     return (
@@ -565,24 +281,25 @@ export const ContextSunburstChart: React.FC<ContextSunburstChartProps> = ({
           <FiInfo className="w-12 h-12 mx-auto text-gray-400" />
           <div>
             <p className={`text-lg font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-              No Context Data Available
+              No Gmail Context Data
             </p>
             <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-              This workspace doesn't have any context items yet
+              Sync Gmail to visualize your email context
             </p>
           </div>
-          <div className="space-y-2">
-            <button
-              onClick={addSampleContextData}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                isDarkMode ? 'bg-blue-600 hover:bg-blue-500 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-              }`}>
-              Add Sample Context Data
-            </button>
-            <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-              This will create sample context items to demonstrate the visualization
-            </p>
-          </div>
+          <button
+            onClick={() => {
+              chrome.runtime
+                .sendMessage({
+                  type: 'SYNC_GMAIL_MEMORY',
+                  payload: { workspaceId, maxMessages: 50, daysBack: 7, forceRefresh: true },
+                })
+                .then(() => setTimeout(() => loadContextData(), 3000));
+            }}
+            className="px-4 py-2 rounded-lg font-medium transition-all transform hover:scale-105 flex items-center space-x-2 mx-auto bg-gradient-to-r from-teal-500 to-blue-500 hover:from-teal-600 hover:to-blue-600 text-white shadow-lg">
+            <FiMail className="w-4 h-4" />
+            <span>Sync Gmail Now</span>
+          </button>
         </div>
       </div>
     );
@@ -593,240 +310,201 @@ export const ContextSunburstChart: React.FC<ContextSunburstChartProps> = ({
       {/* Header */}
       <div className="flex items-center justify-between">
         <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-          Context Visualization
+          Gmail Context Visualization
         </h3>
         <div className="flex items-center space-x-3">
           <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-            {contextData.length} items • {contextData.reduce((sum, item) => sum + item.metadata.tokens, 0)} tokens
+            {contextData.length} items • {totalTokens.toLocaleString()} tokens
           </span>
+          <button
+            onClick={() => setDeleteMode(!deleteMode)}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium transition-all transform hover:scale-105 ${
+              deleteMode
+                ? 'bg-red-500 text-white shadow-lg'
+                : isDarkMode
+                  ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}>
+            <FiTarget className="w-4 h-4 inline mr-1" />
+            {deleteMode ? 'Exit Delete Mode' : 'Delete Mode'}
+          </button>
+          <button
+            onClick={loadContextData}
+            className={`p-2 rounded-lg transition-all transform hover:scale-110 ${
+              isDarkMode ? 'hover:bg-gray-700 text-gray-300' : 'hover:bg-gray-100 text-gray-600'
+            }`}>
+            <FiRefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Delete Mode Banner */}
+      {deleteMode && (
+        <div className="bg-gradient-to-r from-red-500 to-pink-500 text-white px-4 py-3 rounded-lg shadow-lg animate-pulse">
           <div className="flex items-center space-x-2">
-            <button
-              onClick={addSampleContextData}
-              className={`px-3 py-1 text-xs rounded-lg font-medium transition-colors ${
-                isDarkMode ? 'bg-blue-600 hover:bg-blue-500 text-white' : 'bg-blue-500 hover:bg-blue-600 text-white'
-              }`}
-              title="Add sample context data">
-              Add Sample Data
-            </button>
-            <button
-              onClick={() => {
-                console.log('Current context data:', contextData);
-                loadContextData();
-              }}
-              className={`p-2 rounded-lg transition-colors ${
-                isDarkMode
-                  ? 'hover:bg-gray-700 text-gray-300 hover:text-white'
-                  : 'hover:bg-gray-100 text-gray-600 hover:text-gray-900'
-              }`}
-              title="Refresh context data">
-              <FiRefreshCw className="w-4 h-4" />
-            </button>
+            <FiTrash2 className="w-5 h-5" />
+            <span className="font-medium">Delete Mode Active - Click any segment to delete it</span>
           </div>
+        </div>
+      )}
+
+      {/* Sunburst */}
+      <div
+        className={`p-4 rounded-lg shadow-xl ${isDarkMode ? 'bg-gradient-to-br from-gray-800 to-gray-900' : 'bg-gradient-to-br from-white to-gray-50'}`}
+        style={{ height: '600px' }}>
+        <ResponsiveSunburst
+          data={sunburstData}
+          margin={{ top: 30, right: 30, bottom: 30, left: 30 }}
+          id="name"
+          value="value"
+          cornerRadius={4}
+          borderWidth={3}
+          borderColor={{ theme: 'background' }}
+          colors={{ datum: 'data.color' }}
+          childColor={{ from: 'color', modifiers: [['brighter', 0.2]] }}
+          enableArcLabels={true}
+          arcLabelsSkipAngle={15}
+          arcLabelsTextColor={{ from: 'color', modifiers: [['darker', 3]] }}
+          onClick={node => {
+            if (node.data.itemData) {
+              if (deleteMode) {
+                handleDeleteContext(node.data.itemId!);
+              } else {
+                setSelectedItem(node.data.itemData);
+                setShowDeleteConfirm(true);
+              }
+            }
+          }}
+          onMouseEnter={node => {
+            if (node.data.itemId) {
+              setHoveredItem(node.data.itemId);
+            }
+          }}
+          onMouseLeave={() => setHoveredItem(null)}
+          tooltip={({ id, value, color, data }) => (
+            <div
+              className="px-4 py-3 rounded-xl shadow-2xl backdrop-blur-sm animate-in fade-in duration-200"
+              style={{
+                background: isDarkMode
+                  ? 'linear-gradient(135deg, rgba(17, 24, 39, 0.95), rgba(31, 41, 55, 0.95))'
+                  : 'linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(249, 250, 251, 0.95))',
+                border: `2px solid ${color}`,
+                maxWidth: '350px',
+              }}>
+              <div className="flex items-center space-x-2 mb-2">
+                <div
+                  className="w-4 h-4 rounded-full shadow-lg"
+                  style={{ backgroundColor: color, boxShadow: `0 0 10px ${color}` }}
+                />
+                <span className={`font-bold text-sm ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>{id}</span>
+              </div>
+              {value && (
+                <div className="space-y-1">
+                  <div className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <span className="text-blue-500">●</span> {value} tokens
+                  </div>
+                  <div className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <span className="text-green-500">●</span> {((value / totalTokens) * 100).toFixed(2)}% of total
+                  </div>
+                </div>
+              )}
+              {data.itemData && (
+                <div
+                  className={`text-xs mt-3 pt-3 border-t ${isDarkMode ? 'border-gray-700 text-gray-400' : 'border-gray-200 text-gray-600'}`}>
+                  <div className="flex items-center space-x-2">
+                    <FiTrash2 className="w-3 h-3 text-red-500" />
+                    <span>{deleteMode ? 'Click to delete' : 'Click for options'}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          theme={{
+            background: 'transparent',
+            text: { fill: isDarkMode ? '#D1D5DB' : '#374151', fontSize: 11, fontWeight: 600 },
+          }}
+          animate={true}
+          motionConfig="gentle"
+        />
+      </div>
+
+      {/* Legend with gradient */}
+      <div className="flex items-center justify-center space-x-8 mt-6">
+        <div className="flex items-center space-x-2 px-4 py-2 rounded-lg bg-gradient-to-r from-blue-500/20 to-blue-600/20 border border-blue-500/30">
+          <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 shadow-lg" />
+          <span className={`font-medium ${isDarkMode ? 'text-blue-300' : 'text-blue-700'}`}>
+            Episodic ({contextData.filter(i => i.metadata.memoryType === 'episodic').length})
+          </span>
+        </div>
+        <div className="flex items-center space-x-2 px-4 py-2 rounded-lg bg-gradient-to-r from-green-500/20 to-green-600/20 border border-green-500/30">
+          <div className="w-5 h-5 rounded-full bg-gradient-to-br from-green-400 to-green-600 shadow-lg" />
+          <span className={`font-medium ${isDarkMode ? 'text-green-300' : 'text-green-700'}`}>
+            Semantic ({contextData.filter(i => i.metadata.memoryType === 'semantic').length})
+          </span>
+        </div>
+        <div className="flex items-center space-x-2 px-4 py-2 rounded-lg bg-gradient-to-r from-purple-500/20 to-purple-600/20 border border-purple-500/30">
+          <div className="w-5 h-5 rounded-full bg-gradient-to-br from-purple-400 to-purple-600 shadow-lg" />
+          <span className={`font-medium ${isDarkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+            Procedural ({contextData.filter(i => i.metadata.memoryType === 'procedural').length})
+          </span>
         </div>
       </div>
 
-      {/* Interactive Sunburst Chart */}
-      <div className={`p-4 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-gray-100'}`}>
-        <div className="relative">
-          <ReactECharts
-            key={refreshKey}
-            ref={chartRef}
-            option={getChartOption()}
-            style={{ height: '500px', width: '100%' }}
-            onEvents={{
-              click: handleChartClick,
-              dblclick: handleChartDoubleClick,
-              mousedown: handleChartMouseDown,
-              mouseup: handleChartMouseUp,
-            }}
-            theme={isDarkMode ? 'dark' : 'light'}
-            notMerge={true}
-            lazyUpdate={false}
-          />
-
-          {/* Enhanced Drag & Drop Delete Zone */}
-          <div
-            className={`absolute top-4 right-4 p-4 rounded-xl border-2 border-dashed transition-all duration-300 ${
-              draggedItem
-                ? 'border-red-500 bg-gradient-to-br from-red-50 to-red-100 dark:from-red-900/30 dark:to-red-800/20 scale-110 shadow-lg'
-                : 'border-gray-300 dark:border-gray-600 bg-gradient-to-br from-gray-50 to-gray-100 dark:from-gray-700/50 dark:to-gray-800/30 hover:scale-105'
-            }`}
-            onDragOver={handleDragOver}
-            onDrop={handleDrop}>
-            <div className="flex flex-col items-center space-y-2">
-              <div
-                className={`p-2 rounded-full transition-all ${
-                  draggedItem
-                    ? 'bg-red-500 text-white animate-pulse'
-                    : 'bg-gray-200 dark:bg-gray-600 text-gray-500 dark:text-gray-400'
-                }`}>
-                <FiTrash2 className="w-5 h-5" />
-              </div>
-              <p
-                className={`text-xs font-medium text-center ${
-                  draggedItem ? 'text-red-600 dark:text-red-400' : 'text-gray-500 dark:text-gray-400'
-                }`}>
-                {draggedItem ? 'Drop to Delete' : 'Delete Zone'}
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Enhanced Legend with Icons */}
-        <div className="mt-6 grid grid-cols-2 md:grid-cols-3 gap-3">
-          {Object.entries(
-            contextData.reduce(
-              (acc, item) => {
-                if (!acc[item.type]) {
-                  acc[item.type] = [];
-                }
-                acc[item.type].push(item);
-                return acc;
-              },
-              {} as Record<string, ContextItem[]>,
-            ),
-          ).map(([type, items]) => {
-            const count = items.length;
-            const tokens = items.reduce((sum, item) => sum + item.metadata.tokens, 0);
-
-            // Get color and icon for this type
-            const typeConfig = {
-              message: { color: isDarkMode ? '#3b82f6' : '#2563eb', label: 'Messages', icon: FiUser },
-              page: { color: isDarkMode ? '#10b981' : '#059669', label: 'Pages', icon: FiGlobe },
-              gmail: { color: isDarkMode ? '#f59e0b' : '#d97706', label: 'Gmail', icon: FiMail },
-              memory: { color: isDarkMode ? '#8b5cf6' : '#7c3aed', label: 'Memory', icon: FiDatabase },
-              file: { color: isDarkMode ? '#ef4444' : '#dc2626', label: 'Files', icon: FiFile },
-              history: { color: isDarkMode ? '#6b7280' : '#4b5563', label: 'History', icon: FiClock },
-              email: { color: isDarkMode ? '#f59e0b' : '#d97706', label: 'Email', icon: FiMail },
-              document: { color: isDarkMode ? '#10b981' : '#059669', label: 'Documents', icon: FiFile },
-              chat: { color: isDarkMode ? '#3b82f6' : '#2563eb', label: 'Chat', icon: FiUser },
-              web: { color: isDarkMode ? '#10b981' : '#059669', label: 'Web', icon: FiGlobe },
-            };
-
-            const config = typeConfig[type as keyof typeof typeConfig] || {
-              color: isDarkMode ? '#6b7280' : '#4b5563',
-              label: type.charAt(0).toUpperCase() + type.slice(1),
-              icon: FiDatabase,
-            };
-
-            const IconComponent = config.icon;
-
-            return (
-              <div
-                key={type}
-                className={`flex items-center space-x-3 p-3 rounded-lg transition-all hover:scale-105 ${
-                  isDarkMode ? 'bg-gray-700/50 hover:bg-gray-700' : 'bg-white/50 hover:bg-white'
-                }`}
-                style={{
-                  borderLeft: `4px solid ${config.color}`,
-                  boxShadow: `0 2px 8px ${config.color}20`,
-                }}>
-                <div className="p-2 rounded-lg" style={{ backgroundColor: config.color + '20' }}>
-                  <IconComponent className="w-4 h-4" style={{ color: config.color }} />
-                </div>
-                <div className="flex-1">
-                  <div className={`text-sm font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                    {config.label}
-                  </div>
-                  <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                    {count} items • {tokens} tokens
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Enhanced Instructions */}
-        <div
-          className={`mt-6 p-4 rounded-xl ${isDarkMode ? 'bg-gradient-to-r from-gray-700 to-gray-800' : 'bg-gradient-to-r from-gray-50 to-gray-100'}`}>
-          <div className="flex items-center space-x-2 mb-3">
-            <div className={`p-1 rounded-full ${isDarkMode ? 'bg-blue-500/20' : 'bg-blue-500/10'}`}>
-              <FiInfo className="w-4 h-4 text-blue-500" />
-            </div>
-            <p className={`text-sm font-semibold ${isDarkMode ? 'text-gray-200' : 'text-gray-700'}`}>
-              Interaction Guide
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-600/50' : 'bg-white/50'}`}>
-              <div className="flex items-center space-x-2 mb-1">
-                <span className="text-lg">👆</span>
-                <span className={`text-xs font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Single Click
-                </span>
-              </div>
-              <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Select and delete context items
-              </p>
-            </div>
-            <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-600/50' : 'bg-white/50'}`}>
-              <div className="flex items-center space-x-2 mb-1">
-                <span className="text-lg">👆👆</span>
-                <span className={`text-xs font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  Double Click
-                </span>
-              </div>
-              <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                Quick delete without confirmation
-              </p>
-            </div>
-            <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-600/50' : 'bg-white/50'}`}>
-              <div className="flex items-center space-x-2 mb-1">
-                <span className="text-lg">🖱️</span>
-                <span className={`text-xs font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>Hover</span>
-              </div>
-              <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                View detailed content preview
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Delete Confirmation Modal */}
+      {/* Delete Modal */}
       {showDeleteConfirm && selectedItem && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200">
           <div
-            className={`p-6 rounded-lg max-w-md w-full mx-4 ${
-              isDarkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
+            className={`p-6 rounded-2xl max-w-md w-full mx-4 shadow-2xl transform animate-in zoom-in duration-200 ${
+              isDarkMode ? 'bg-gradient-to-br from-gray-800 to-gray-900' : 'bg-gradient-to-br from-white to-gray-50'
             }`}>
             <div className="flex items-center space-x-3 mb-4">
-              <FiTrash2 className="w-6 h-6 text-red-500" />
-              <h3 className="text-lg font-semibold">Delete Context Item</h3>
+              <div className="p-2 rounded-full bg-red-500/20">
+                <FiTrash2 className="w-6 h-6 text-red-500" />
+              </div>
+              <h3 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>Delete Context</h3>
             </div>
-
-            <div className="mb-4">
-              <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-600'} mb-2`}>
+            <div className="mb-6">
+              <p className={`text-sm mb-3 ${isDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>
                 Are you sure you want to delete this context item?
               </p>
-              <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'} mb-1`}>
-                  Type: {selectedItem.type} • Tokens: {selectedItem.metadata.tokens}
-                </p>
+              <div
+                className={`p-4 rounded-xl ${isDarkMode ? 'bg-gray-700/50 border border-gray-600' : 'bg-gray-100 border border-gray-200'}`}>
+                <div className="flex items-center space-x-2 mb-2">
+                  <span
+                    className={`px-2 py-1 rounded text-xs font-bold ${
+                      selectedItem.metadata.memoryType === 'episodic'
+                        ? 'bg-blue-500 text-white'
+                        : selectedItem.metadata.memoryType === 'semantic'
+                          ? 'bg-green-500 text-white'
+                          : 'bg-purple-500 text-white'
+                    }`}>
+                    {selectedItem.metadata.memoryType}
+                  </span>
+                  <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    {selectedItem.metadata.tokens} tokens
+                  </span>
+                </div>
                 <p className={`text-sm ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                  {selectedItem.content.substring(0, 150)}
-                  {selectedItem.content.length > 150 ? '...' : ''}
+                  {selectedItem.content.substring(0, 150)}...
                 </p>
               </div>
             </div>
-
             <div className="flex space-x-3">
               <button
                 onClick={() => {
                   setShowDeleteConfirm(false);
                   setSelectedItem(null);
                 }}
-                className={`flex-1 px-4 py-2 rounded-lg transition-colors ${
+                className={`flex-1 px-4 py-3 rounded-xl font-medium transition-all transform hover:scale-105 ${
                   isDarkMode
-                    ? 'bg-gray-700 hover:bg-gray-600 text-gray-300'
-                    : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+                    ? 'bg-gray-700 hover:bg-gray-600 text-gray-200'
+                    : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
                 }`}>
                 Cancel
               </button>
               <button
-                onClick={() => selectedItem && handleDeleteContext(selectedItem.id)}
-                className="flex-1 px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors">
+                onClick={() => handleDeleteContext(selectedItem.id)}
+                className="flex-1 px-4 py-3 bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700 text-white rounded-xl font-medium transition-all transform hover:scale-105 shadow-lg">
                 Delete
               </button>
             </div>

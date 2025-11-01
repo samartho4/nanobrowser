@@ -18,6 +18,7 @@ interface ChatInputProps {
   // Historical session ID - if provided, shows replay button instead of send button
   historicalSessionId?: string | null;
   onReplay?: (sessionId: string) => void;
+  workspaceId?: string; // For Gmail integration
 }
 
 // @-mention suggestion interface
@@ -51,6 +52,7 @@ export default function ChatInput({
   isDarkMode = false,
   historicalSessionId,
   onReplay,
+  workspaceId = 'default',
 }: ChatInputProps) {
   const [text, setText] = useState('');
   const [attachedFiles, setAttachedFiles] = useState<AttachedFile[]>([]);
@@ -59,6 +61,7 @@ export default function ChatInput({
   const [selectedSuggestionIndex, setSelectedSuggestionIndex] = useState(0);
   const [atMentionQuery, setAtMentionQuery] = useState('');
   const [cursorPosition, setCursorPosition] = useState(0);
+  const [isLoadingGmail, setIsLoadingGmail] = useState(false);
 
   const isSendButtonDisabled = useMemo(
     () => disabled || (text.trim() === '' && attachedFiles.length === 0),
@@ -304,6 +307,28 @@ export default function ChatInput({
           textarea.focus();
         }, 0);
 
+        // Handle @gmail integration - fetch and populate Gmail context
+        if (suggestion.mention === '@gmail') {
+          setIsLoadingGmail(true);
+          try {
+            // Send message to background to trigger Gmail memory integration
+            await chrome.runtime.sendMessage({
+              type: 'GMAIL_FETCH_CONTEXT',
+              payload: {
+                workspaceId,
+                maxMessages: 20,
+                daysBack: 7,
+              },
+            });
+
+            console.log('Gmail context fetch initiated for workspace:', workspaceId);
+          } catch (error) {
+            console.error('Failed to fetch Gmail context:', error);
+          } finally {
+            setIsLoadingGmail(false);
+          }
+        }
+
         // TODO: Create context pill when @agent:* options are selected
         // This will be handled by the ContextManager in the options page
       }
@@ -311,7 +336,7 @@ export default function ChatInput({
       setShowAtMentions(false);
       setAtMentionSuggestions([]);
     },
-    [text, cursorPosition],
+    [text, cursorPosition, workspaceId],
   );
 
   const handleKeyDown = useCallback(
@@ -413,8 +438,28 @@ export default function ChatInput({
 
   return (
     <div className="relative">
+      {/* Gmail loading indicator */}
+      {isLoadingGmail && (
+        <div
+          className={`absolute bottom-full left-0 right-0 mb-2 rounded-lg border shadow-lg p-4 ${
+            isDarkMode ? 'bg-slate-800 border-slate-600' : 'bg-white border-gray-200'
+          }`}>
+          <div className="flex items-center space-x-3">
+            <div className="animate-spin rounded-full h-5 w-5 border-2 border-teal-500 border-t-transparent"></div>
+            <div>
+              <div className={`text-sm font-medium ${isDarkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                Fetching Gmail context...
+              </div>
+              <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                Analyzing emails and extracting memories
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* @-mention dropdown */}
-      {showAtMentions && atMentionSuggestions.length > 0 && (
+      {showAtMentions && atMentionSuggestions.length > 0 && !isLoadingGmail && (
         <div
           ref={dropdownRef}
           className={`absolute bottom-full left-0 right-0 mb-2 max-h-64 overflow-y-auto rounded-lg border shadow-lg z-50 ${

@@ -159,6 +159,66 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // Indicates async response
   }
 
+  // Handle Gmail context fetch from @gmail mention
+  if (message.type === 'GMAIL_FETCH_CONTEXT') {
+    (async () => {
+      try {
+        const { workspaceId, maxMessages, daysBack } = message.payload;
+        logger.info(`Fetching Gmail context for workspace: ${workspaceId}`);
+
+        // Import GmailService and GmailMemoryIntegration
+        const { GmailService } = await import('@src/services/gmail/GmailService');
+        const { GmailMemoryIntegration } = await import('@src/services/gmail/GmailMemoryIntegration');
+
+        // Get Gmail credentials from environment
+        const GMAIL_CLIENT_ID = process.env.VITE_GMAIL_CLIENT_ID || '';
+        const GMAIL_CLIENT_SECRET = process.env.VITE_GMAIL_CLIENT_SECRET || '';
+
+        if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET) {
+          sendResponse({
+            success: false,
+            error: 'Gmail credentials not configured. Please set up Gmail in Tools settings.',
+          });
+          return;
+        }
+
+        // Initialize Gmail service
+        const gmailService = new GmailService(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET);
+        await gmailService.initialize();
+
+        if (!gmailService.isAuthenticated()) {
+          sendResponse({
+            success: false,
+            error: 'Gmail not authenticated. Please authenticate in Tools settings.',
+          });
+          return;
+        }
+
+        // Create Gmail memory integration and analyze
+        const gmailMemory = new GmailMemoryIntegration(gmailService);
+        const result = await gmailMemory.analyzeAndPopulateMemory(workspaceId, {
+          maxMessages: maxMessages || 20,
+          daysBack: daysBack || 7,
+          includeThreads: true,
+        });
+
+        logger.info(`Gmail context fetch completed:`, result);
+
+        sendResponse({
+          success: true,
+          result,
+        });
+      } catch (error) {
+        logger.error('Failed to fetch Gmail context:', error);
+        sendResponse({
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    })();
+    return true; // Indicates async response
+  }
+
   // Handle workspace memory requests using task queue to prevent timeouts
   if (
     [
@@ -433,11 +493,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'GET_CONTEXT_PILLS') {
     (async () => {
       try {
+        console.log(`[DEBUG] GET_CONTEXT_PILLS request for workspace: ${message.payload.workspaceId}`);
         const { contextManager } = await import('../services/context/ContextManager');
         const { workspaceId } = message.payload;
 
         // Get context items and convert to pills format
         const contextItems = await contextManager.select(workspaceId, '', 10000, {});
+        console.log(
+          `[DEBUG] contextManager.select returned ${contextItems.length} items for workspace: ${workspaceId}`,
+        );
+
         const pills = contextItems.map(item => ({
           id: item.id,
           type: item.type,
@@ -450,8 +515,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           preview: item.content.substring(0, 100) + '...',
         }));
 
+        console.log(`[DEBUG] Returning ${pills.length} context pills for workspace: ${workspaceId}`);
         sendResponse({ ok: true, pills });
       } catch (error) {
+        console.error(`[DEBUG] GET_CONTEXT_PILLS failed for workspace: ${message.payload.workspaceId}`, error);
         sendResponse({
           ok: false,
           error: error instanceof Error ? error.message : 'Failed to get context pills',

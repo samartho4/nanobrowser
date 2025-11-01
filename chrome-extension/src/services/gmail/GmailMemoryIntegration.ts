@@ -270,6 +270,25 @@ class GmailMemoryIntegration {
             },
           });
 
+          // CONTEXT BRIDGE: Write Gmail context item for Context Pills
+          const { contextManager } = await import('../context/ContextManager');
+          await contextManager.write(
+            workspaceId,
+            {
+              type: 'gmail',
+              content: `${firstEmail.subject}\nFrom: ${firstEmail.from}\nTo: ${firstEmail.to}\n\n${firstEmail.bodyText.substring(0, 200)}...`,
+              agentId: 'gmail-integration',
+              sourceType: 'main',
+              metadata: {
+                source: 'gmail-conversation',
+                priority: firstEmail.actionRequired ? 5 : 3,
+                sessionId,
+                relevanceScore: firstEmail.actionRequired ? 0.9 : 0.6,
+              },
+            },
+            'episodic',
+          );
+
           count++;
         } catch (error) {
           logger.error(`Failed to create episode for thread ${threadId}:`, error);
@@ -317,7 +336,7 @@ class GmailMemoryIntegration {
           );
 
           // Save response time patterns
-          if (pattern.averageResponseTime > 0) {
+          if (typeof pattern.averageResponseTime === 'number' && pattern.averageResponseTime > 0) {
             await memoryService.saveFact(workspaceId, `response-time:${email}`, pattern.averageResponseTime, {
               extractedFrom: 'gmail-analysis',
             });
@@ -329,6 +348,25 @@ class GmailMemoryIntegration {
               extractedFrom: 'gmail-analysis',
             });
           }
+
+          // CONTEXT BRIDGE: Write contact context item for Context Pills
+          const { contextManager } = await import('../context/ContextManager');
+          await contextManager.write(
+            workspaceId,
+            {
+              type: 'gmail',
+              content: `Contact: ${pattern.name} (${pattern.email})\nRelationship: ${pattern.relationship}\nImportance: ${Math.round(pattern.importance * 100)}%\nFrequency: ${pattern.frequency} emails\nTopics: ${pattern.topics.join(', ')}`,
+              agentId: 'gmail-integration',
+              sourceType: 'main',
+              metadata: {
+                source: 'gmail-contact-analysis',
+                priority: pattern.importance > 0.7 ? 4 : 2,
+                sessionId: `gmail_contacts_${new Date().toISOString().split('T')[0]}`,
+                relevanceScore: pattern.importance > 0.7 ? 0.8 : 0.5,
+              },
+            },
+            'semantic',
+          );
 
           count += 3; // Contact + response time + topics
         } catch (error) {
